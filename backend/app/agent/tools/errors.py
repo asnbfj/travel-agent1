@@ -36,12 +36,23 @@ class ToolConfigError(RuntimeError):
 
 
 class ToolCallError(RuntimeError):
-    """上游接口调用失败：网络错误 / 鉴权失败 / 业务错误码。"""
+    """上游接口调用失败：网络错误 / 鉴权失败 / 业务错误码。
 
-    def __init__(self, tool: str, detail: str, status_code: Optional[int] = None) -> None:
+    `retryable=True` 表示这是瞬时故障（5xx / 429 / QPS 限流），
+    客户端会退避后重试；否则说明重试无意义（鉴权、参数、配额），直接报错。
+    """
+
+    def __init__(
+        self,
+        tool: str,
+        detail: str,
+        status_code: Optional[int] = None,
+        retryable: bool = False,
+    ) -> None:
         self.tool = tool
         self.detail = detail
         self.status_code = status_code
+        self.retryable = retryable
         super().__init__(f"[{tool}] {detail}")
 
 
@@ -53,7 +64,10 @@ def require_key(tool: str, key: Optional[str], name: str, hint: str = "") -> str
 
 
 def raise_for_http(tool: str, response: httpx.Response) -> None:
-    """把上游 HTTP 错误转成可读的 ToolCallError"""
+    """把上游 HTTP 错误转成可读的 ToolCallError
+
+    5xx 与 429 标记为可重试（瞬时故障），其余 4xx 属永久错误。
+    """
     if response.status_code == 200:
         return
     if response.status_code in (401, 403):
@@ -61,7 +75,16 @@ def raise_for_http(tool: str, response: httpx.Response) -> None:
             tool, f"鉴权失败（HTTP {response.status_code}），请检查 API Key 是否有效", response.status_code
         )
     if response.status_code == 429:
-        raise ToolCallError(tool, "请求过于频繁（HTTP 429），请稍后重试", 429)
+        raise ToolCallError(
+            tool, "请求过于频繁（HTTP 429），请稍后重试", 429, retryable=True
+        )
+    if response.status_code >= 500:
+        raise ToolCallError(
+            tool,
+            f"上游返回 HTTP {response.status_code}: {response.text[:200]}",
+            response.status_code,
+            retryable=True,
+        )
     raise ToolCallError(
         tool, f"上游返回 HTTP {response.status_code}: {response.text[:200]}", response.status_code
     )

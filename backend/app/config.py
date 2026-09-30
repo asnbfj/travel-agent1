@@ -36,6 +36,17 @@ class Settings(BaseSettings):
     # 单次 LLM 调用超时（秒）——推理模型单次可能耗时数十秒
     LLM_TIMEOUT: int = 240
 
+    # ===== 外部 API 重试策略（高德 / 博查共用）=====
+    # 上游偶发抖动（超时、连接被重置、5xx、429）不该一次失败就放弃。
+    # 只重试**可恢复**的错误；鉴权失败、参数错误、配额用尽这类重试无意义，直接报错。
+    API_RETRY_ATTEMPTS: int = 3
+    # 指数退避基数（秒）：第 n 次重试等待 API_RETRY_BASE_DELAY * 2^n
+    API_RETRY_BASE_DELAY: float = 0.8
+    # 单次退避上限（秒），避免退避时间无限增长
+    API_RETRY_MAX_DELAY: float = 8.0
+    # 退避抖动比例（0~1）：避免多个请求在同一时刻集中重试再次打爆上游
+    API_RETRY_JITTER: float = 0.25
+
     DEEPSEEK_API_KEY: Optional[str] = None
     DEEPSEEK_MODEL: str = "deepseek-flash"
     DEEPSEEK_BASE_URL: str = "https://api.deepseek.com/v1"
@@ -58,6 +69,8 @@ class Settings(BaseSettings):
     AMAP_MIN_INTERVAL: float = 0.34
     # 命中 QPS 限流时的重试次数（指数退避）
     AMAP_QPS_RETRY: int = 2
+    # 瞬时故障（超时/网络中断/5xx）的重试次数，见 API_RETRY_*
+    AMAP_RETRY_ATTEMPTS: int = 3
 
     # 博查 AI 搜索（https://open.bochaai.com）
     # 用于「景点 / 必玩地点 / 酒店住宿」的联网搜索
@@ -74,6 +87,8 @@ class Settings(BaseSettings):
     BOCHA_FRESHNESS: str = "noLimit"
     BOCHA_HOTEL_FRESHNESS: str = "oneYear"
     BOCHA_TIMEOUT: int = 30
+    # 瞬时故障（超时/网络中断/5xx/429）的重试次数，见 API_RETRY_*
+    BOCHA_RETRY_ATTEMPTS: int = 3
 
     # 严格线上模式：缺少 Key / 调用失败时抛出明确错误，绝不返回模拟数据
     STRICT_ONLINE: bool = True

@@ -1,6 +1,30 @@
 <template>
   <div class="chat-page" :class="{ 'chat-page--empty': messages.length === 0 && !loading }">
+    <!-- 会话栏：宽屏常驻且可收缩；窄屏改走抽屉（见文件末尾） -->
+    <ConversationSidebar
+      v-if="!isNarrow"
+      class="chat-side"
+      :conversations="conversationStore.conversations"
+      :active-id="conversationStore.activeId"
+      :collapsed="sidebarCollapsed"
+      :loading="conversationStore.loadingList"
+      @create="handleNewConversation"
+      @select="handleSelectConversation"
+      @remove="handleDeleteConversation"
+      @toggle-collapse="toggleSidebar"
+    />
+
     <header class="chat-head">
+      <div v-if="isNarrow" class="chat-head-bar">
+        <button type="button" class="rail-btn" @click="drawerOpen = true">
+          <icon-menu />
+          <span>会话</span>
+        </button>
+        <button type="button" class="rail-btn" @click="handleNewConversation">
+          <icon-plus />
+          <span>新对话</span>
+        </button>
+      </div>
       <h1 class="title-song">智能规划</h1>
       <p class="chat-lede">
         把想去的地方、日期、人数和预算说清楚。它会联网查完天气、景点、住宿和路线，
@@ -60,7 +84,27 @@
                 >
                   {{ toolLabel(call.name) }}
                 </span>
+                <button
+                  v-if="stepsOf(msg.id).length"
+                  type="button"
+                  class="calls-toggle"
+                  :aria-expanded="expandedSteps[msg.id] ? 'true' : 'false'"
+                  @click="toggleSteps(msg.id)"
+                >
+                  <icon-down v-if="!expandedSteps[msg.id]" />
+                  <icon-up v-else />
+                  执行过程
+                  <span class="calls-toggle-num num">{{ stepsOf(msg.id).length }}</span>
+                </button>
               </div>
+
+              <!-- 执行过程：本地刚跑完的那一轮才有（历史消息不存这些过程细节） -->
+              <ProgressTimeline
+                v-if="stepsOf(msg.id).length && expandedSteps[msg.id]"
+                class="steps-in-message"
+                :steps="stepsOf(msg.id)"
+                :now="now"
+              />
 
               <WeatherCard v-if="msg.weather_info" :weather="msg.weather_info" class="forecast-slot" />
 
@@ -124,10 +168,7 @@
           </div>
           <div class="entry-body">
             <div class="entry-head"><span class="entry-who">TravelAI</span></div>
-            <div class="busy">
-              <span class="busy-ruler" aria-hidden="true"><span class="busy-marker"></span></span>
-              <span class="busy-text">正在规划。需要联网查几次资料，可能要十几秒。</span>
-            </div>
+            <ProgressTimeline :steps="liveSteps" :now="now" />
           </div>
         </li>
       </ol>
@@ -142,10 +183,6 @@
         @press-enter="handleSend"
       />
       <div class="composer-actions">
-        <a-button @click="clearHistory">
-          <template #icon><icon-delete /></template>
-          清空记录
-        </a-button>
         <a-button type="primary" @click="handleSend" :disabled="!inputMessage.trim()">
           <template #icon><icon-send /></template>
           发送
@@ -200,31 +237,109 @@
       </a-spin>
     </a-modal>
   </div>
+
+  <!-- 窄屏抽屉：盖在聊天区之上，点遮罩或「关闭」收起 -->
+  <div v-if="isNarrow && drawerOpen" class="drawer-layer">
+    <div class="drawer-mask" @click="drawerOpen = false" />
+    <ConversationSidebar
+      variant="drawer"
+      :conversations="conversationStore.conversations"
+      :active-id="conversationStore.activeId"
+      :loading="conversationStore.loadingList"
+      @create="handleNewConversation"
+      @select="handleSelectConversation"
+      @remove="handleDeleteConversation"
+      @close="drawerOpen = false"
+    />
+  </div>
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, nextTick, onMounted } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { Message } from '@arco-design/web-vue'
 import {
-  agentApi,
   exportItineraryPdf,
   readExportError,
+  sendChatMessage,
   type ChatMessage,
 } from '../api/agent'
 import { tripApi } from '../api/trips'
 import { useTripStore } from '../stores/trip'
+import { useConversationStore } from '../stores/conversation'
+import ConversationSidebar from '../components/chat/ConversationSidebar.vue'
+import ProgressTimeline from '../components/chat/ProgressTimeline.vue'
 import WeatherCard from '../components/common/WeatherCard.vue'
 import { renderMarkdown } from '../utils/markdown'
+import { reduceProgress, type ProgressStep } from '../utils/progress'
+import { formatClock } from '../utils/time'
 
 const router = useRouter()
 const tripStore = useTripStore()
+const conversationStore = useConversationStore()
 const inputMessage = ref('')
-const messages = ref<Array<ChatMessage & { weather_info?: any; itinerary?: any; suggested_actions?: string[]; tool_calls?: Array<{ name: string; args: Record<string, any> }> }>>([])
 const loading = ref(false)
 const chatContainer = ref<HTMLElement>()
+
+/** 消息列表由会话 store 持有：切换会话时整体替换，不再散落在视图里 */
+const messages = computed(() => conversationStore.messages)
+
+// ---------------------------------------------------------------- 会话栏
+
+const SIDEBAR_COLLAPSED_KEY = 'travelai:chat-sidebar-collapsed'
+/** 宽屏会话栏是否收起（记住用户的选择） */
+const sidebarCollapsed = ref(localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === '1')
+/** 窄屏抽屉开关 */
+const drawerOpen = ref(false)
+const isNarrow = ref(false)
+let narrowQuery: MediaQueryList | null = null
+
+const toggleSidebar = () => {
+  sidebarCollapsed.value = !sidebarCollapsed.value
+  localStorage.setItem(SIDEBAR_COLLAPSED_KEY, sidebarCollapsed.value ? '1' : '0')
+}
+
+const onBreakpointChange = (event: MediaQueryListEvent) => {
+  isNarrow.value = event.matches
+  // 切回宽屏后抽屉不再有意义，避免它悬在页面上
+  if (!event.matches) drawerOpen.value = false
+}
 /** 正在导出 PDF 的消息 id（用于按钮 loading 态） */
 const exportingId = ref<string | null>(null)
+
+// ---------------------------------------------------------------- 执行过程
+
+/** 本次请求的实时步骤（跑完即清空，所以放在视图而不是会话 store 里） */
+const liveSteps = ref<ProgressStep[]>([])
+/** 已跑完的步骤按消息 id 留着，便于回看「刚才调用了什么、有没有重试」 */
+const stepsByMessage = ref<Record<string, ProgressStep[]>>({})
+/** 哪几条消息的执行过程被展开了 */
+const expandedSteps = ref<Record<string, boolean>>({})
+
+/** 用于给进行中的步骤算实时耗时；只在请求期间跑，避免空转 */
+const now = ref(Date.now())
+let ticker: number | null = null
+
+const startTicker = () => {
+  stopTicker()
+  now.value = Date.now()
+  ticker = window.setInterval(() => {
+    now.value = Date.now()
+  }, 200)
+}
+
+const stopTicker = () => {
+  if (ticker !== null) {
+    window.clearInterval(ticker)
+    ticker = null
+  }
+}
+
+const stepsOf = (messageId: string): ProgressStep[] => stepsByMessage.value[messageId] ?? []
+
+const toggleSteps = (messageId: string) => {
+  expandedSteps.value[messageId] = !expandedSteps.value[messageId]
+}
 
 /** 与后端约定一致：足够长且像行程的回复才提供导出/保存入口 */
 const isItinerary = (content?: string) => (content?.trim().length ?? 0) >= 400
@@ -385,10 +500,7 @@ const templates = [
   { title: '泰国泼水节', desc: '4 月中旬去曼谷，4 天，预算 5000' },
 ]
 
-const formatTime = (timestamp: string) => {
-  const date = new Date(timestamp)
-  return date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
-}
+const formatTime = (timestamp: string) => formatClock(timestamp)
 
 
 const useTemplate = (template: typeof templates[0]) => {
@@ -436,8 +548,8 @@ const handleSend = async () => {
   if (!content || loading.value) return
 
   // 添加用户消息
-  messages.value.push({
-    id: Date.now().toString(),
+  conversationStore.appendMessage({
+    id: `local-user-${Date.now()}`,
     role: 'user',
     content,
     timestamp: new Date().toISOString(),
@@ -445,14 +557,35 @@ const handleSend = async () => {
 
   inputMessage.value = ''
   loading.value = true
+  liveSteps.value = []
+  startTicker()
   scrollToBottom()
 
   try {
-    const response = await agentApi.chat({ message: content })
+    const response = await sendChatMessage(
+      {
+        message: content,
+        // 不传则服务端开新会话；传了则续在当前会话里
+        conversation_id: conversationStore.activeId,
+      },
+      {
+        // 边跑边显示「执行到哪一步」
+        onProgress: (event) => {
+          reduceProgress(liveSteps.value, event)
+          scrollToBottom()
+        },
+      },
+    )
+
+    if (response.conversation_id) {
+      conversationStore.bindActiveConversation(response.conversation_id)
+    }
+
+    const assistantId = `local-assistant-${Date.now()}`
 
     // 添加 AI 回复
-    messages.value.push({
-      id: (Date.now() + 1).toString(),
+    conversationStore.appendMessage({
+      id: assistantId,
       role: 'assistant',
       content: response.message,
       timestamp: new Date().toISOString(),
@@ -460,10 +593,25 @@ const handleSend = async () => {
       suggested_actions: response.suggested_actions,
       tool_calls: response.tool_calls,
     })
+
+    // 这一轮的执行过程留在回复下面，可展开回看
+    if (liveSteps.value.length) {
+      const finished = liveSteps.value.map((step) =>
+        step.status === 'running'
+          ? { ...step, status: 'done' as const, durationMs: Date.now() - step.startedAt }
+          : step,
+      )
+      stepsByMessage.value[assistantId] = finished
+    }
+
+    // 首条提问的标题由服务端生成，刷新列表好把它显示出来
+    conversationStore.fetchConversations().catch(() => {})
   } catch (error) {
-    Message.error('发送失败，请重试')
+    Message.error(error instanceof Error ? error.message : '发送失败，请重试')
   } finally {
     loading.value = false
+    liveSteps.value = []
+    stopTicker()
     scrollToBottom()
   }
 }
@@ -484,13 +632,43 @@ const handleAction = (action: string) => {
   }
 }
 
-const clearHistory = async () => {
+// ---------------------------------------------------------------- 会话操作
+
+/** 新建一段会话：只清空本地状态，首条消息发出后服务端才真正落库 */
+const handleNewConversation = () => {
+  conversationStore.startNewConversation()
+  savedTrips.value = {}
+  // 执行过程是按本地消息 id 记的，换会话后这些 id 都不再存在
+  stepsByMessage.value = {}
+  expandedSteps.value = {}
+  inputMessage.value = ''
+  drawerOpen.value = false
+}
+
+/** 切换会话 */
+const handleSelectConversation = async (conversationId: string) => {
+  drawerOpen.value = false
+  if (conversationId === conversationStore.activeId) return
   try {
-    await agentApi.clearHistory()
-    messages.value = []
-    Message.success('已清空对话记录')
+    await conversationStore.selectConversation(conversationId)
+    // 「已保存到我的行程」与执行过程都是按本地消息 id 记的，换了会话不能沿用
+    savedTrips.value = {}
+    stepsByMessage.value = {}
+    expandedSteps.value = {}
+    scrollToBottom()
   } catch (error) {
-    Message.error('清空失败')
+    Message.error('加载会话失败，请重试')
+  }
+}
+
+/** 删除会话 */
+const handleDeleteConversation = async (conversationId: string) => {
+  try {
+    await conversationStore.removeConversation(conversationId)
+    savedTrips.value = {}
+    Message.success('会话已删除')
+  } catch (error) {
+    Message.error('删除失败，请重试')
   }
 }
 
@@ -502,42 +680,107 @@ const scrollToBottom = () => {
   })
 }
 
-onMounted(() => {
-  // 加载历史记录
-  agentApi.getHistory().then(res => {
-    messages.value = res.messages
-    scrollToBottom()
-  }).catch(() => {
-    // 未登录或加载失败时忽略
-  })
+onMounted(async () => {
+  narrowQuery = window.matchMedia('(max-width: 860px)')
+  isNarrow.value = narrowQuery.matches
+  narrowQuery.addEventListener('change', onBreakpointChange)
+
+  try {
+    const conversations = await conversationStore.fetchConversations()
+    // 默认接着最近一段会话继续，避免每次进来都是一片空白
+    if (conversations.length) {
+      await conversationStore.selectConversation(conversations[0].id)
+    }  } catch (error) {
+    // 未登录或加载失败时保持空白状态
+  }
+  scrollToBottom()
+})
+
+onUnmounted(() => {
+  narrowQuery?.removeEventListener('change', onBreakpointChange)
+  stopTicker()
 })
 </script>
 
 <style scoped>
+/* 两列网格：左列会话栏（跨满全高），右列聊天内容。
+   用网格而非嵌套 wrapper，是为了让会话栏与输入框同高、且各自独立滚动。 */
 .chat-page {
-  display: flex;
-  flex-direction: column;
-  height: calc(100vh - 156px);
-  min-height: 520px;
-  padding-top: 26px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  /* 撑满 sheet-content 的内容框（页头与页脚之间），而不是减去一个估算值：
+     这样输入框稳定贴在底部，不会浮在半空、下方留一段空白 */
+  height: 100%;
+  /* 关键：这里**不能**设 min-height。
+     页头 + 本页 + 页脚一旦超过视口，浏览器就会开始滚动整个文档，
+     于是侧边栏和聊天区会「一起被滚走」——看起来就像两个面板滚动联动。
+     让本页永远不超过可用高度，滚动就只会发生在各自的内部容器里。 */
+  overflow: hidden;
 }
 
-/* 还没有对话时不要撑满一屏，否则示例和输入框之间会出现大片空白 */
-.chat-page--empty {
-  height: auto;
+.chat-side {
+  grid-area: 1 / 1 / -1 / 2;
+  /* 会话栏跨满四行，高度等于本页高度；列表再长也只在自己内部滚动 */
   min-height: 0;
 }
 
+/* 没有消息时，中间的空档由 chat-log 吸收，示例与输入框各归两端 */
 .chat-page--empty .chat-log {
-  flex: none;
-  overflow: visible;
   padding-bottom: 0;
 }
 
 .chat-head {
-  flex: none;
+  grid-area: 1 / 2;
+  padding-top: 26px;
   padding-bottom: 16px;
   border-bottom: 1px solid var(--rule-strong);
+}
+
+/* 窄屏工具栏：会话栏进了抽屉，这里留出入口 */
+.chat-head-bar {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.rail-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 11px;
+  border: 1px solid var(--rule-strong);
+  background: var(--plot);
+  color: var(--ink);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  transition: color 0.15s ease, border-color 0.15s ease;
+}
+
+.rail-btn:hover {
+  color: var(--magenta);
+  border-color: var(--magenta);
+}
+
+/* ————————————————————————— 窄屏抽屉 ————————————————————————— */
+
+.drawer-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: flex;
+}
+
+.drawer-mask {
+  position: absolute;
+  inset: 0;
+  background: rgba(14, 27, 34, 0.3);
+}
+
+.drawer-layer :deep(.side) {
+  position: relative;
+  z-index: 1;
 }
 
 .chat-head h1 {
@@ -554,7 +797,7 @@ onMounted(() => {
 /* ————————————————————————— 示例开头 ————————————————————————— */
 
 .samples {
-  flex: none;
+  grid-area: 2 / 2;
   margin-top: 22px;
   border: 1px solid var(--rule);
   background: var(--plot);
@@ -609,9 +852,11 @@ onMounted(() => {
 /* ————————————————————————— 对话记录 ————————————————————————— */
 
 .chat-log {
-  flex: 1;
+  grid-area: 3 / 2;
   overflow-y: auto;
   min-height: 0;
+  /* 滚到尽头后不要继续把滚动传给外层页面，否则会「连带」着滚另一个面板 */
+  overscroll-behavior: contain;
   padding: 22px 4px 8px 0;
 }
 
@@ -786,57 +1031,41 @@ onMounted(() => {
   border-color: var(--magenta);
 }
 
-/* ————————————————————————— 进行中 ————————————————————————— */
+/* ————————————————————————— 执行过程 ————————————————————————— */
 
-.busy {
-  display: flex;
+/* 消息里的执行过程默认收起，展开后与「本轮调用」保持同样的左缩进 */
+.steps-in-message {
+  margin-bottom: 16px;
+}
+
+.calls-toggle {
+  display: inline-flex;
   align-items: center;
-  gap: 14px;
+  gap: 4px;
+  margin-left: auto;
+  padding: 2px 8px;
+  font-size: 12px;
+  font-family: inherit;
+  color: var(--ink-3);
+  background: transparent;
   border: 1px solid var(--rule);
-  background: var(--plot);
-  padding: 14px 16px;
+  cursor: pointer;
+  transition: color 0.15s ease, border-color 0.15s ease;
 }
 
-.busy-ruler {
-  position: relative;
-  flex: none;
-  width: 44px;
-  height: 9px;
-  background-image: repeating-linear-gradient(
-    to right,
-    var(--rule-strong) 0 1px,
-    transparent 1px 11px
-  );
+.calls-toggle:hover {
+  color: var(--ink);
+  border-color: var(--rule-strong);
 }
 
-.busy-marker {
-  position: absolute;
-  top: 0;
-  left: 0;
-  width: 2px;
-  height: 9px;
-  background: var(--magenta);
-  animation: sweep 1.6s ease-in-out infinite alternate;
-}
-
-@keyframes sweep {
-  from {
-    left: 0;
-  }
-  to {
-    left: 42px;
-  }
-}
-
-.busy-text {
-  font-size: 13px;
-  color: var(--ink-2);
+.calls-toggle-num {
+  color: var(--ink-3);
 }
 
 /* ————————————————————————— 输入 ————————————————————————— */
 
 .composer {
-  flex: none;
+  grid-area: 4 / 2;
   border: 1px solid var(--rule);
   background: var(--plot);
   padding: 12px;
@@ -856,16 +1085,30 @@ onMounted(() => {
 
 .composer-actions {
   display: flex;
-  justify-content: space-between;
+  justify-content: flex-end;
   margin-top: 12px;
   padding-top: 12px;
   border-top: 1px solid var(--rule);
 }
 
 @media (max-width: 860px) {
+  /* 窄屏会话栏进了抽屉，聊天区回到单列 */
   .chat-page {
     height: auto;
     min-height: 0;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto auto auto auto;
+  }
+
+  .chat-head,
+  .samples,
+  .chat-log,
+  .composer {
+    grid-column: 1;
+  }
+
+  .chat-head {
+    padding-top: 18px;
   }
 
   .chat-log {
@@ -875,6 +1118,28 @@ onMounted(() => {
 
   .entry {
     gap: 12px;
+  }
+}
+
+/* 矮窗口：竖向空间紧张时，先把装饰性文案和留白让给对话区。
+   窗口高度恢复后自动还原，不影响常规桌面下的排版。 */
+@media (max-height: 780px) {
+  .chat-head {
+    padding-top: 14px;
+    padding-bottom: 10px;
+  }
+
+  .chat-lede {
+    display: none;
+  }
+
+  .composer {
+    padding: 8px;
+  }
+
+  .composer-actions {
+    margin-top: 8px;
+    padding-top: 8px;
   }
 }
 </style>

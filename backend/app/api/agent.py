@@ -1,22 +1,29 @@
 """Agent API 路由"""
+import json
 import re
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import Response
+from fastapi.responses import Response, StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.database import get_db
-from app.agent.graph import run_travel_agent
+from app.database import get_db, AsyncSessionLocal
+from app.agent.graph import run_travel_agent, run_travel_agent_stream
 from app.agent.memory import (
-    save_message,
-    get_conversation_history,
-    clear_conversation_history,
+    ConversationNotFound,
+    append_message,
+    count_conversations,
+    create_conversation,
+    delete_conversation,
+    get_conversation,
+    get_messages,
+    list_conversations,
 )
 from app.schemas.agent import (
     AgentMessageRequest,
     AgentMessageResponse,
     AgentPdfExportRequest,
-    ChatHistoryResponse,
+    ConversationDetailResponse,
+    ConversationListResponse,
 )
 from app.services.pdf_service import build_itinerary_pdf
 from app.utils.auth import get_current_user
@@ -42,32 +49,43 @@ async def chat_with_agent(
     """
     与旅行规划 Agent 对话
     用户输入旅行需求，Agent 返回完整的行程规划
-    """
-    try:
-        # 保存用户消息
-        await save_message(
-            user_id=str(current_user.id),
-            role="user",
-            content=request.message,
-            db=db,
-        )
 
-        # 运行 Agent
+    不传 `conversation_id` 时自动开一段新会话，并在响应里回传新会话 ID。
+    """
+    user_id = str(current_user.id)
+
+    # 1) 解析会话：显式指定则校验归属，否则新建
+    if request.conversation_id:
+        conversation = await get_conversation(db, user_id, request.conversation_id)
+        if conversation is None:
+            raise HTTPException(status_code=404, detail="会话不存在")
+    else:
+        conversation = await create_conversation(db, user_id)
+
+    try:
+        # 2) 先落用户消息：Agent 失败也不会丢掉这次提问
+        user_message = await append_message(db, conversation.id, "user", request.message)
+
+        # 3) 运行 Agent（历史只取本会话，且排除刚入库的本轮提问）
         result = await run_travel_agent(
-            user_id=str(current_user.id),
+            user_id=user_id,
             user_message=request.message,
             context=request.context,
+            conversation_id=str(conversation.id),
+            exclude_message_id=str(user_message.id),
         )
 
-        # 保存 AI 回复
-        await save_message(
-            user_id=str(current_user.id),
-            role="assistant",
-            content=result.get("response", ""),
-            db=db,
-            metadata={
+        # 4) 保存 AI 回复与本轮结构化结果
+        await append_message(
+            db,
+            conversation.id,
+            "assistant",
+            result.get("response", ""),
+            meta={
                 "intent": result.get("intent"),
                 "tool_calls": result.get("tool_calls"),
+                "weather_info": result.get("weather_info"),
+                "suggested_actions": result.get("suggested_actions"),
             },
         )
 
@@ -78,10 +96,123 @@ async def chat_with_agent(
             itinerary=result.get("itinerary"),
             weather_info=result.get("weather_info"),
             tool_calls=result.get("tool_calls", []),
+            conversation_id=str(conversation.id),
         )
     except Exception as e:
         logger.error(f"Agent 处理失败: {e}")
         raise HTTPException(status_code=500, detail=f"Agent 处理失败: {str(e)}")
+
+
+def _sse(payload: dict) -> str:
+    """把事件编码成 SSE 的一帧
+
+    `json.dumps` 会把换行转义掉，所以正文里带 Markdown 换行也不会破坏协议。
+    """
+    return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+
+@router.post("/chat/stream", tags=["Agent"])
+async def chat_with_agent_stream(
+    request: AgentMessageRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """与 Agent 对话，并以 SSE 实时推送执行过程
+
+    每帧形如 `data: {"type": "...", ...}`，`type` 取值：
+    `stage`（阶段）/ `tool_start` / `tool_end` / `retry` / `error`，
+    最后一帧固定是 `done`，带 `message` / `weather_info` / `tool_calls` /
+    `suggested_actions` / `conversation_id`，结构与非流式 `/chat` 一致。
+
+    前端据此显示「执行到哪一步」；即使中途失败也会以 `error` + `done` 收尾，
+    不会让界面一直停在加载态。
+    """
+    user_id = str(current_user.id)
+
+    # 1) 会话与用户消息在这里落库：此时请求级 db 仍然可用
+    if request.conversation_id:
+        conversation = await get_conversation(db, user_id, request.conversation_id)
+        if conversation is None:
+            raise HTTPException(status_code=404, detail="会话不存在")
+    else:
+        conversation = await create_conversation(db, user_id)
+
+    conversation_id = str(conversation.id)
+    user_message = await append_message(db, conversation_id, "user", request.message)
+
+    async def event_stream():
+        result: dict = {}
+        try:
+            async for event in run_travel_agent_stream(
+                user_id=user_id,
+                user_message=request.message,
+                context=request.context,
+                conversation_id=conversation_id,
+                exclude_message_id=str(user_message.id),
+            ):
+                if event.get("type") != "done":
+                    yield _sse(event)
+                    continue
+
+                result = event.get("result") or {}
+                text = result.get("response", "")
+
+                # 2) 保存 AI 回复。这里必须另开会话：请求级 db 会在响应体
+                #    开始发送前被依赖注入收尾关闭，流式生成器不能依赖它。
+                try:
+                    async with AsyncSessionLocal() as save_db:
+                        await append_message(
+                            save_db,
+                            conversation_id,
+                            "assistant",
+                            text,
+                            meta={
+                                "intent": result.get("intent"),
+                                "tool_calls": result.get("tool_calls") or [],
+                                "weather_info": result.get("weather_info"),
+                                "suggested_actions": result.get("suggested_actions") or [],
+                            },
+                        )
+                except Exception:  # noqa: BLE001 - 落库失败不应该吞掉已经生成的回复
+                    logger.exception("⚠ 保存 AI 回复失败（会话 %s）", conversation_id)
+
+                yield _sse(
+                    {
+                        "type": "done",
+                        "conversation_id": conversation_id,
+                        "message": text,
+                        "intent": result.get("intent"),
+                        "weather_info": result.get("weather_info"),
+                        "tool_calls": result.get("tool_calls") or [],
+                        "suggested_actions": result.get("suggested_actions") or [],
+                    }
+                )
+        except ConversationNotFound:
+            yield _sse({"type": "error", "text": "会话不存在"})
+        except Exception as e:  # noqa: BLE001 - 出错也要给前端一个收尾帧
+            logger.exception("❌ 流式对话失败")
+            yield _sse({"type": "error", "text": f"处理失败：{type(e).__name__}: {e}"})
+            yield _sse(
+                {
+                    "type": "done",
+                    "conversation_id": conversation_id,
+                    "message": "",
+                    "weather_info": None,
+                    "tool_calls": [],
+                    "suggested_actions": [],
+                }
+            )
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            # 关闭 Nginx 等反向代理的缓冲，否则事件会被攒着一起发
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @router.post("/export/pdf", tags=["Agent"])
@@ -182,35 +313,54 @@ async def get_tools_status():
     }
 
 
-@router.get("/history", response_model=ChatHistoryResponse)
-async def get_chat_history(
-    limit: int = 20,
+@router.get("/conversations", response_model=ConversationListResponse)
+async def list_user_conversations(
+    limit: int = 50,
     offset: int = 0,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """获取对话历史"""
-    messages = await get_conversation_history(
-        user_id=str(current_user.id),
-        db=db,
-        limit=limit,
-        offset=offset,
-    )
-    return ChatHistoryResponse(
-        messages=messages,
-        total=len(messages),
-        has_more=len(messages) == limit,
-    )
+    """获取当前用户的会话列表（按最近使用倒序）
+
+    左侧会话栏据此渲染；`preview` 与 `message_count` 让列表项无需再逐个拉详情。
+    """
+    user_id = str(current_user.id)
+    conversations = await list_conversations(db, user_id, limit=limit, offset=offset)
+    total = await count_conversations(db, user_id)
+    return ConversationListResponse(conversations=conversations, total=total)
 
 
-@router.delete("/history")
-async def clear_chat_history(
+@router.get("/conversations/{conversation_id}", response_model=ConversationDetailResponse)
+async def get_conversation_detail(
+    conversation_id: str,
+    limit: int = 200,
+    offset: int = 0,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """清除对话历史"""
-    count = await clear_conversation_history(
-        user_id=str(current_user.id),
-        db=db,
+    """获取某个会话及其全部消息"""
+    conversation = await get_conversation(db, str(current_user.id), conversation_id)
+    if conversation is None:
+        raise HTTPException(status_code=404, detail="会话不存在")
+
+    messages = await get_messages(db, str(conversation.id), limit=limit, offset=offset)
+    return ConversationDetailResponse(
+        id=str(conversation.id),
+        title=conversation.title,
+        created_at=conversation.created_at,
+        updated_at=conversation.updated_at,
+        messages=messages,
     )
-    return {"message": f"已清除 {count} 条对话记录"}
+
+
+@router.delete("/conversations/{conversation_id}")
+async def delete_user_conversation(
+    conversation_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """删除会话（连同其中的消息）"""
+    deleted = await delete_conversation(db, str(current_user.id), conversation_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="会话不存在")
+    return {"message": "会话已删除"}

@@ -17,6 +17,13 @@ import httpx
 
 from app.config import get_settings
 from app.agent.tools.errors import require_key, raise_for_http, raise_for_amap, ToolCallError
+from app.agent.tools.retry import (
+    RETRYABLE_STATUS_CODES,
+    backoff_delay,
+    describe_status_reason,
+    retry_reason,
+)
+from app.agent.progress import notify_retry
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -42,6 +49,26 @@ _AMAP_WEEKDAYS = ["周一", "周二", "周三", "周四", "周五", "周六", "�
 
 # 高德 QPS 超限的错误码
 _AMAP_QPS_INFOCODES = {"10021", "10019", "10020", "10003", "10004"}
+# 其中「配额用尽」重试也不会恢复（当天不会再放量），不该白等退避
+_AMAP_QPS_NO_RETRY_INFOCODES = {"10003"}
+
+
+def _is_qps_error(payload: Any) -> bool:
+    """判断高德响应是否为 QPS 限流（这类错误值得退避重试）"""
+    if not isinstance(payload, dict):
+        return False
+    if str(payload.get("status")) == "1":
+        return False
+    return str(payload.get("infocode", "")) in _AMAP_QPS_INFOCODES
+
+
+def _is_retryable_qps_error(payload: Any) -> bool:
+    """限流类错误中，重试真的可能有用的那些"""
+    if not isinstance(payload, dict):
+        return False
+    return str(payload.get("infocode", "")) in (
+        _AMAP_QPS_INFOCODES - _AMAP_QPS_NO_RETRY_INFOCODES
+    )
 
 # 城市级地名可接受的行政级别（高德 geocode 的 level 字段）
 #
@@ -90,6 +117,11 @@ class AmapClient:
         self.base_url: str = (settings.AMAP_BASE_URL or "https://restapi.amap.com/v3").rstrip("/")
         self.timeout: int = settings.AMAP_TIMEOUT
         self.qps_retry: int = getattr(settings, "AMAP_QPS_RETRY", 2)
+        # 瞬时故障（超时 / 网络中断 / 5xx / 429）的重试次数
+        self.transient_retry: int = getattr(settings, "AMAP_RETRY_ATTEMPTS", 3)
+        self._retry_base: float = getattr(settings, "API_RETRY_BASE_DELAY", 0.8)
+        self._retry_cap: float = getattr(settings, "API_RETRY_MAX_DELAY", 8.0)
+        self._retry_jitter: float = getattr(settings, "API_RETRY_JITTER", 0.25)
 
     # ------------------------------------------------------------------ 底层
     def _require_key(self) -> str:
@@ -100,22 +132,72 @@ class AmapClient:
             "请到 https://console.amap.com/dev/key/app 申请「Web服务」类型的 Key 并填入 .env",
         )
 
+    async def _sleep_before_retry(
+        self, path: str, reason: str, attempt: int, total: int
+    ) -> None:
+        """退避等待，并把「即将重试」推给前端
+
+        Args:
+            attempt: 第几次重试（从 1 开始，用于日志与界面展示）
+            total: 最多重试几次
+        """
+        delay = backoff_delay(attempt - 1, self._retry_base, self._retry_cap, self._retry_jitter)
+        logger.warning(
+            "⏳ 高德%s，%.1fs 后重试（第 %d/%d 次）：%s",
+            reason,
+            delay,
+            attempt,
+            total,
+            path,
+        )
+        notify_retry(self.TOOL, attempt, total, delay, reason)
+        await asyncio.sleep(delay)
+
     async def _get(self, path: str, params: Dict[str, Any]) -> Dict[str, Any]:
         key = self._require_key()
         query = {k: v for k, v in params.items() if v not in (None, "")}
         query["key"] = key
         url = f"{self.base_url}{path}"
 
-        # 命中 QPS 限流时有重试机会；每次请求前都过一遍全局限速器
-        for attempt in range(self.qps_retry + 1):
+        # QPS 限流与瞬时故障分开计数：成因不同，重试预算也不该互相挤占
+        # （限流靠限速器慢慢摊平，网络抖动靠退避快速恢复）
+        qps_left = self.qps_retry
+        transient_left = self.transient_retry
+
+        while True:
+            # 每次请求前都过一遍全局限速器，把并发尖峰摊平
             await _rate_limiter.acquire()
+
             try:
                 async with httpx.AsyncClient(timeout=self.timeout) as client:
                     response = await client.get(url, params=query)
-            except httpx.TimeoutException:
-                raise ToolCallError(self.TOOL, f"请求超时（{self.timeout}s）：{path}")
-            except httpx.HTTPError as e:
-                raise ToolCallError(self.TOOL, f"网络错误：{e}")
+            except (httpx.TimeoutException, httpx.TransportError) as e:
+                # 超时 / 连接被重置这类网络故障是典型瞬时错误，值得重试
+                reason = retry_reason(e)
+                if transient_left > 0:
+                    transient_left -= 1
+                    used = self.transient_retry - transient_left
+                    await self._sleep_before_retry(path, reason, used, self.transient_retry)
+                    continue
+                if isinstance(e, httpx.TimeoutException):
+                    raise ToolCallError(
+                        self.TOOL,
+                        f"请求超时（{self.timeout}s），已重试 {self.transient_retry} 次仍失败：{path}",
+                    )
+                raise ToolCallError(
+                    self.TOOL,
+                    f"网络错误，已重试 {self.transient_retry} 次仍失败：{e}",
+                )
+
+            # 5xx / 429 属瞬时故障；重试耗尽后再按普通错误抛出
+            if response.status_code in RETRYABLE_STATUS_CODES:
+                reason = describe_status_reason(response.status_code)
+                if transient_left > 0:
+                    transient_left -= 1
+                    used = self.transient_retry - transient_left
+                    await self._sleep_before_retry(path, reason, used, self.transient_retry)
+                    continue
+                raise_for_http(self.TOOL, response)
 
             raise_for_http(self.TOOL, response)
             try:
@@ -124,24 +206,20 @@ class AmapClient:
                 raise ToolCallError(self.TOOL, f"返回内容不是 JSON：{response.text[:200]}")
 
             # QPS 超限：退避后重试（高德这个错误通常是瞬时的）
-            if _is_qps_error(payload) and attempt < self.qps_retry:
-                backoff = 0.5 * (2 ** attempt)
-                logger.warning(
-                    "⏳ 高德 QPS 超限（%s），%.1fs 后重试（第 %d/%d 次）：%s",
-                    payload.get("infocode"),
-                    backoff,
-                    attempt + 1,
-                    self.qps_retry,
+            if _is_retryable_qps_error(payload) and qps_left > 0:
+                qps_left -= 1
+                used = self.qps_retry - qps_left
+                await self._sleep_before_retry(
                     path,
+                    f"QPS 超限（{payload.get('infocode')}）",
+                    used,
+                    self.qps_retry,
                 )
-                await asyncio.sleep(backoff)
                 continue
 
+            # 走到这里说明不可恢复（Key 无效 / 参数错误 / 配额用尽），直接报错
             raise_for_amap(self.TOOL, payload)
             return payload
-
-        # 理论不可达（循环内要么 return 要么 raise）
-        raise ToolCallError(self.TOOL, f"请求失败：{path}")
 
     # -------------------------------------------------------------- 地理编码
     async def geocode(self, address: str, city: Optional[str] = None) -> Dict[str, Any]:
@@ -464,15 +542,6 @@ class AmapClient:
             "duration_minutes": first["duration_minutes"],
             "options": options,
         }
-
-
-def _is_qps_error(payload: Any) -> bool:
-    """判断高德响应是否为 QPS 限流（这类错误值得退避重试）"""
-    if not isinstance(payload, dict):
-        return False
-    if str(payload.get("status")) == "1":
-        return False
-    return str(payload.get("infocode", "")) in _AMAP_QPS_INFOCODES
 
 
 def _validate_city_match(requested: str, info: Dict[str, Any]) -> None:

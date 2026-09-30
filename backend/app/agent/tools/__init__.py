@@ -27,6 +27,7 @@ from app.agent.tools.collector import (
     collect,
     collect_call,
 )
+from app.agent.progress import set_current_tool
 
 # 原始工具清单
 ALL_TOOLS: List[BaseTool] = [
@@ -52,6 +53,8 @@ def _guard(tool: BaseTool) -> BaseTool:
 
     async def _run(**kwargs) -> str:
         collector = get_collector()
+        # 标记当前工具名：工具内部的 API 客户端在重试时据此报出正确的工具名
+        set_current_tool(tool.name)
 
         # 已知本次请求内该工具不可用（缺 Key 等），直接短路
         if collector is not None and collector.is_unavailable(tool.name):

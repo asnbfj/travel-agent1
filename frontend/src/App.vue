@@ -1,5 +1,5 @@
 <template>
-  <div class="sheet">
+  <div class="sheet" :class="{ 'sheet--shell': isShellLayout }">
     <AppHeader />
 
     <div class="sheet-body">
@@ -38,7 +38,18 @@
 </template>
 
 <script setup lang="ts">
+import { computed } from 'vue'
+import { useRoute } from 'vue-router'
 import AppHeader from './components/common/AppHeader.vue'
+
+const route = useRoute()
+
+/**
+ * 聊天页用「应用外壳」布局：整页锁定在视口高度内，滚动只发生在各自的内部容器里。
+ *
+ * 其余页面（首页、我的行程、配置）是正常的长文档，应当由页面整体滚动。
+ */
+const isShellLayout = computed(() => route.path.startsWith('/ai-chat'))
 </script>
 
 <style scoped>
@@ -46,6 +57,35 @@ import AppHeader from './components/common/AppHeader.vue'
   min-height: 100vh;
   display: flex;
   flex-direction: column;
+}
+
+/* ————————————————————————— 应用外壳布局（聊天页）—————————————————————————
+
+   聊天页需要「整页不滚动，只有侧边栏和聊天区各自滚动」。光靠子元素写
+   `height: 100%` 做不到：父级高度若是「内容决定」的，百分比会退化成 auto，
+   内容一长就把整页撑开 —— 两个面板于是被同一根页面滚动条带着走。
+
+   所以这里从最外层就把高度钉死，并让中间每一层都有确定高度：
+     .sheet      -> 100dvh，不滚动
+     .sheet-body -> 单行 minmax(0, 1fr)，行高即容器高
+     于是 .sheet-content / .chat-page 的 height:100% 才真正解析到可用高度。 */
+
+.sheet--shell {
+  height: 100vh;
+  height: 100dvh;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.sheet--shell .sheet-body {
+  /* 允许收缩到可用高度，而不是被内容顶开 */
+  min-height: 0;
+  grid-template-rows: minmax(0, 1fr);
+}
+
+.sheet--shell .sheet-content {
+  min-height: 0;
+  overflow: hidden;
 }
 
 .sheet-body {

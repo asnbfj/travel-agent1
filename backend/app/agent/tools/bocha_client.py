@@ -14,12 +14,20 @@
 """
 from datetime import date
 from typing import Optional, Dict, Any, List
+import asyncio
 import logging
 
 import httpx
 
 from app.config import get_settings
 from app.agent.tools.errors import require_key, ToolCallError
+from app.agent.tools.retry import (
+    RETRYABLE_STATUS_CODES,
+    backoff_delay,
+    describe_status_reason,
+    retry_reason,
+)
+from app.agent.progress import notify_retry
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -58,6 +66,11 @@ class BochaClient:
         self.freshness: str = settings.BOCHA_FRESHNESS or "noLimit"
         self.hotel_freshness: str = settings.BOCHA_HOTEL_FRESHNESS or "oneYear"
         self.timeout: int = settings.BOCHA_TIMEOUT
+        # 瞬时故障（超时 / 网络中断 / 5xx / 429）的重试次数
+        self.transient_retry: int = getattr(settings, "BOCHA_RETRY_ATTEMPTS", 3)
+        self._retry_base: float = getattr(settings, "API_RETRY_BASE_DELAY", 0.8)
+        self._retry_cap: float = getattr(settings, "API_RETRY_MAX_DELAY", 8.0)
+        self._retry_jitter: float = getattr(settings, "API_RETRY_JITTER", 0.25)
 
     def _require_key(self) -> str:
         return require_key(
@@ -67,6 +80,15 @@ class BochaClient:
             "请到 https://open.bochaai.com 申请博查 API Key 并填入 .env",
         )
 
+    async def _sleep_before_retry(self, reason: str, attempt: int, total: int) -> None:
+        """退避等待，并把「即将重试」推给前端"""
+        delay = backoff_delay(attempt - 1, self._retry_base, self._retry_cap, self._retry_jitter)
+        logger.warning(
+            "⏳ 博查%s，%.1fs 后重试（第 %d/%d 次）", reason, delay, attempt, total
+        )
+        notify_retry(self.TOOL, attempt, total, delay, reason)
+        await asyncio.sleep(delay)
+
     async def search(
         self,
         query: str,
@@ -75,7 +97,7 @@ class BochaClient:
         freshness: Optional[str] = None,
         summary: Optional[bool] = None,
     ) -> Dict[str, Any]:
-        """执行一次联网检索"""
+        """执行一次联网检索（瞬时故障会退避重试）"""
         key = self._require_key()
         url = f"{self.base_url}{self.path}"
 
@@ -92,15 +114,41 @@ class BochaClient:
             "Content-Type": "application/json",
         }
 
-        try:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
-                response = await client.post(url, json=payload, headers=headers)
-        except httpx.TimeoutException:
-            raise ToolCallError(self.TOOL, f"检索超时（{self.timeout}s），请稍后重试")
-        except httpx.HTTPError as e:
-            raise ToolCallError(self.TOOL, f"网络错误：{e}")
+        transient_left = self.transient_retry
 
-        raise_for_bocha_http(response)
+        while True:
+            try:
+                async with httpx.AsyncClient(timeout=self.timeout) as client:
+                    response = await client.post(url, json=payload, headers=headers)
+            except (httpx.TimeoutException, httpx.TransportError) as e:
+                reason = retry_reason(e)
+                if transient_left > 0:
+                    transient_left -= 1
+                    await self._sleep_before_retry(
+                        reason, self.transient_retry - transient_left, self.transient_retry
+                    )
+                    continue
+                if isinstance(e, httpx.TimeoutException):
+                    raise ToolCallError(
+                        self.TOOL,
+                        f"检索超时（{self.timeout}s），已重试 {self.transient_retry} 次仍失败",
+                    )
+                raise ToolCallError(
+                    self.TOOL, f"网络错误，已重试 {self.transient_retry} 次仍失败：{e}"
+                )
+
+            # 5xx / 429 属瞬时故障；重试耗尽后再走下面的常规错误处理
+            if response.status_code in RETRYABLE_STATUS_CODES and transient_left > 0:
+                transient_left -= 1
+                await self._sleep_before_retry(
+                    describe_status_reason(response.status_code),
+                    self.transient_retry - transient_left,
+                    self.transient_retry,
+                )
+                continue
+
+            raise_for_bocha_http(response)
+            break
         try:
             data = response.json()
         except ValueError:

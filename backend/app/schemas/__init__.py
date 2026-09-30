@@ -17,8 +17,11 @@ from app.schemas.trip import (
 from app.schemas.agent import (
     AgentMessageRequest,
     AgentMessageResponse,
+    AgentPdfExportRequest,
     ChatMessage,
-    ChatHistoryResponse,
+    ConversationSummary,
+    ConversationListResponse,
+    ConversationDetailResponse,
 )
 
 __all__ = [
@@ -35,6 +38,9 @@ __all__ = [
     "ItinerarySpotSchema",
     "AgentMessageRequest",
     "AgentMessageResponse",
+    "AgentPdfExportRequest",
     "ChatMessage",
-    "ChatHistoryResponse",
+    "ConversationSummary",
+    "ConversationListResponse",
+    "ConversationDetailResponse",
 ]
