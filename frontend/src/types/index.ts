@@ -18,6 +18,9 @@ export interface WeatherInfo {
   city: string
   forecasts: WeatherForecast[]
   tips: string
+  /** 数据来源与发布时间，由高德地图返回，可能缺省 */
+  source?: string
+  report_time?: string
 }
 
 export interface ItinerarySpot {

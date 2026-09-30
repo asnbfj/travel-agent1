@@ -1,187 +1,147 @@
 <template>
-  <div class="ai-chat-page">
-    <!-- 页面头部 -->
-    <div class="page-header">
-      <h1>🧳 智能旅行规划</h1>
-      <p class="subtitle">告诉我你的旅行想法，AI 帮你规划完美行程</p>
-    </div>
+  <div class="chat-page" :class="{ 'chat-page--empty': messages.length === 0 && !loading }">
+    <header class="chat-head">
+      <h1 class="title-song">智能规划</h1>
+      <p class="chat-lede">
+        把想去的地方、日期、人数和预算说清楚。它会联网查完天气、景点、住宿和路线，
+        再排成一份每天的时刻表；哪里不合适，直接说要改什么。
+      </p>
+    </header>
 
-    <!-- 快速模板 -->
-    <div class="quick-templates" v-if="messages.length === 0">
-      <h3>🚀 试试这些</h3>
-      <div class="template-list">
-        <a-card
-          v-for="template in templates"
-          :key="template.title"
-          :hoverable="true"
-          class="template-card"
-          @click="useTemplate(template)"
-        >
-          <template #cover>
-            <div class="template-icon">{{ template.icon }}</div>
-          </template>
-          <div class="template-content">
-            <div class="template-title">{{ template.title }}</div>
-            <div class="template-desc">{{ template.desc }}</div>
-          </div>
-        </a-card>
+    <!-- 空状态：直接给几句能用的开头 -->
+    <section v-if="messages.length === 0 && !loading" class="samples">
+      <div class="samples-head">
+        <span>可以这样开头</span>
+        <span class="muted">点一条直接发出去</span>
       </div>
-    </div>
+      <button
+        v-for="template in templates"
+        :key="template.title"
+        type="button"
+        class="sample"
+        @click="useTemplate(template)"
+      >
+        <span class="sample-text title-song">{{ template.desc }}</span>
+        <span class="sample-tag">{{ template.title }}</span>
+      </button>
+    </section>
 
-    <!-- 聊天消息区域 -->
-    <div class="chat-container" ref="chatContainer">
-      <div class="message-list">
-        <div
+    <!-- 对话记录：一条竖线串起每一轮 -->
+    <div ref="chatContainer" class="chat-log">
+      <ol class="log" aria-live="polite">
+        <li
           v-for="msg in messages"
           :key="msg.id"
-          :class="['message', msg.role]"
+          :class="['entry', `entry--${msg.role}`]"
         >
-          <div class="message-avatar">
-            <a-avatar v-if="msg.role === 'user'" :size="36">
-              <icon-user />
-            </a-avatar>
-            <a-avatar v-else :size="36" class="bot-avatar">
-              <icon-robot />
-            </a-avatar>
+          <div class="entry-gutter">
+            <span class="entry-mark"></span>
           </div>
 
-          <div class="message-content">
-            <div class="message-header">
-              <span class="sender-name">{{ msg.role === 'user' ? '你' : 'TravelAI' }}</span>
-              <span class="message-time">{{ formatTime(msg.timestamp) }}</span>
+          <div class="entry-body">
+            <div class="entry-head">
+              <span class="entry-who">{{ msg.role === 'user' ? '你' : 'TravelAI' }}</span>
+              <span class="entry-time num">{{ formatTime(msg.timestamp) }}</span>
             </div>
 
-            <div class="message-body">
-              <!-- 用户消息 -->
-              <div v-if="msg.role === 'user'" class="user-message">
-                {{ msg.content }}
-              </div>
-
-              <!-- AI 消息 -->
-              <div v-else class="ai-message">
-                <!-- 天气信息 -->
-                <div v-if="msg.weather_info" class="weather-card">
-                  <div class="weather-header">
-                    <icon-environment />
-                    <span>{{ msg.weather_info.city }} 天气预报</span>
-                  </div>
-                  <div class="weather-days">
-                    <div
-                      v-for="day in msg.weather_info.forecasts.slice(0, 5)"
-                      :key="day.date"
-                      class="weather-day"
-                    >
-                      <div class="day-name">{{ day.weekday }}</div>
-                      <div class="day-icon">{{ day.icon }}</div>
-                      <div class="day-weather">{{ day.weather }}</div>
-                      <div class="day-temp">{{ formatTemp(day.temp_low) }}° ~ {{ formatTemp(day.temp_high) }}°</div>
-                    </div>
-                  </div>
-                  <div class="weather-tips" v-if="msg.weather_info.tips">
-                    💡 {{ msg.weather_info.tips }}
-                  </div>
-                  <div class="weather-source">
-                    数据来源：{{ msg.weather_info.source || '高德地图' }}
-                    <template v-if="msg.weather_info.report_time">
-                      · 发布 {{ msg.weather_info.report_time }}
-                    </template>
-                  </div>
-                </div>
-
-                <!-- 本次调用的线上工具 -->
-                <div v-if="msg.tool_calls?.length" class="tool-calls">
-                  <span class="tool-label">已调用线上接口：</span>
-                  <a-tag
-                    v-for="(call, i) in uniqueToolCalls(msg.tool_calls)"
-                    :key="i"
-                    class="tool-tag"
-                    size="small"
-                  >
-                    {{ toolLabel(call.name) }}
-                  </a-tag>
-                </div>
-
-                <!-- 纯文本回复 -->
-                <div class="markdown-content" v-html="renderMarkdown(msg.content)"></div>
-
-                <!-- 行程操作：仅在看起来是完整行程的回复上出现 -->
-                <div v-if="isItinerary(msg.content)" class="export-bar">
-                  <a-button
-                    type="primary"
-                    size="small"
-                    :loading="exportingId === msg.id"
-                    @click="handleExportPdf(msg)"
-                  >
-                    <template #icon><icon-download /></template>
-                    生成 PDF 行程
-                  </a-button>
-
-                  <a-button
-                    v-if="!savedTrips[msg.id]"
-                    size="small"
-                    @click="openSaveModal(msg)"
-                  >
-                    <template #icon><icon-save /></template>
-                    保存到我的行程
-                  </a-button>
-                  <a-button
-                    v-else
-                    size="small"
-                    status="success"
-                    @click="goToTrip(savedTrips[msg.id])"
-                  >
-                    <template #icon><icon-check /></template>
-                    已保存 · 查看行程
-                  </a-button>
-
-                  <span class="export-hint">下载后文字可选中、可搜索</span>
-                </div>
-              </div>
+            <!-- 用户：原话放在浅底上 -->
+            <div v-if="msg.role === 'user'" class="said">
+              {{ msg.content }}
             </div>
 
-            <!-- 建议操作 -->
-            <div
-              v-if="msg.suggested_actions?.length && msg.role === 'assistant'"
-              class="suggested-actions"
-            >
-              <span class="action-label">你可以：</span>
-              <a-tag
-                v-for="action in msg.suggested_actions"
-                :key="action"
-                class="action-tag"
-                @click="handleAction(action)"
+            <!-- AI：这一轮的记录 -->
+            <div v-else class="reply">
+              <div v-if="msg.tool_calls?.length" class="calls">
+                <span class="calls-label">本轮调用</span>
+                <span
+                  v-for="(call, i) in uniqueToolCalls(msg.tool_calls)"
+                  :key="i"
+                  class="call-chip"
+                >
+                  {{ toolLabel(call.name) }}
+                </span>
+              </div>
+
+              <WeatherCard v-if="msg.weather_info" :weather="msg.weather_info" class="forecast-slot" />
+
+              <div class="markdown-content" v-html="renderMarkdown(msg.content)"></div>
+
+              <!-- 行程操作：仅在看起来是完整行程的回复上出现 -->
+              <div v-if="isItinerary(msg.content)" class="export-bar">
+                <a-button
+                  type="primary"
+                  size="small"
+                  :loading="exportingId === msg.id"
+                  @click="handleExportPdf(msg)"
+                >
+                  <template #icon><icon-download /></template>
+                  生成 PDF 行程
+                </a-button>
+
+                <a-button
+                  v-if="!savedTrips[msg.id]"
+                  size="small"
+                  @click="openSaveModal(msg)"
+                >
+                  <template #icon><icon-save /></template>
+                  保存到我的行程
+                </a-button>
+                <a-button
+                  v-else
+                  size="small"
+                  status="success"
+                  @click="goToTrip(savedTrips[msg.id])"
+                >
+                  <template #icon><icon-check /></template>
+                  已保存，打开行程
+                </a-button>
+
+                <span class="export-hint">PDF 里的文字可选中、可搜索</span>
+              </div>
+
+              <div
+                v-if="msg.suggested_actions?.length"
+                class="suggested-actions"
               >
-                {{ action }}
-              </a-tag>
+                <span class="action-label">接下来可以</span>
+                <button
+                  v-for="action in msg.suggested_actions"
+                  :key="action"
+                  type="button"
+                  class="action-chip"
+                  @click="handleAction(action)"
+                >
+                  {{ action }}
+                </button>
+              </div>
             </div>
           </div>
-        </div>
+        </li>
 
-        <!-- 加载状态 -->
-        <div v-if="loading" class="message assistant loading">
-          <div class="message-avatar">
-            <a-avatar :size="36" class="bot-avatar">
-              <icon-robot />
-            </a-avatar>
+        <li v-if="loading" class="entry entry--assistant">
+          <div class="entry-gutter">
+            <span class="entry-mark entry-mark--busy"></span>
           </div>
-          <div class="message-content">
-            <a-typography-paragraph class="typing-indicator">
-              <a-spin :size="16" /> TravelAI 正在规划中...
-            </a-typography-paragraph>
+          <div class="entry-body">
+            <div class="entry-head"><span class="entry-who">TravelAI</span></div>
+            <div class="busy">
+              <span class="busy-ruler" aria-hidden="true"><span class="busy-marker"></span></span>
+              <span class="busy-text">正在规划。需要联网查几次资料，可能要十几秒。</span>
+            </div>
           </div>
-        </div>
-      </div>
+        </li>
+      </ol>
     </div>
 
-    <!-- 输入区域 -->
-    <div class="input-area">
+    <!-- 输入 -->
+    <div class="composer">
       <a-textarea
         v-model="inputMessage"
-        placeholder="描述你的旅行计划... 例如：我想去日本东京，4月份，5天3人，预算2万"
+        placeholder="例如：4 月初去日本东京赏樱，5 天 2 人，预算 2 万，想看夜樱也想留半天给镰仓"
         :auto-size="{ minRows: 2, maxRows: 5 }"
         @press-enter="handleSend"
       />
-      <div class="input-actions">
+      <div class="composer-actions">
         <a-button @click="clearHistory">
           <template #icon><icon-delete /></template>
           清空记录
@@ -254,6 +214,8 @@ import {
 } from '../api/agent'
 import { tripApi } from '../api/trips'
 import { useTripStore } from '../stores/trip'
+import WeatherCard from '../components/common/WeatherCard.vue'
+import { renderMarkdown } from '../utils/markdown'
 
 const router = useRouter()
 const tripStore = useTripStore()
@@ -340,12 +302,12 @@ const openSaveModal = async (msg: {
     // 目的地推断不出来时不要静默留空，明确提示用户补填
     if (!inferred.destination) {
       prefillFailedDestination.value = true
-      prefillNote.value = '未能从对话中识别目的地，请手动填写后再保存。'
+      prefillNote.value = '没能从对话里认出目的地，请手动填写后再保存。'
     } else {
-      prefillNote.value = `已按对话自动填充（共 ${inferred.days_count} 天），请确认日期与人数是否正确。`
+      prefillNote.value = `已按对话自动填写（共 ${inferred.days_count} 天），请确认日期与人数。`
     }
   } catch {
-    prefillNote.value = '自动填充失败，请手动填写行程信息。'
+    prefillNote.value = '自动填写失败，请手动填好行程信息。'
   } finally {
     prefillLoading.value = false
   }
@@ -395,12 +357,12 @@ const confirmSaveTrip = async () => {
   }
 }
 
-/** 线上工具名称 -> 展示名 */
+/** 线上工具名称 -> 展示名（说清数据从哪来） */
 const TOOL_LABELS: Record<string, string> = {
-  get_weather: '高德地图 · 天气查询',
-  search_attractions: '博查 · 联网景点搜索',
-  search_hotels: '博查 · 联网酒店搜索',
-  plan_route: '高德地图 · 路线规划',
+  get_weather: '天气查询（高德地图）',
+  search_attractions: '联网景点搜索（博查）',
+  search_hotels: '联网酒店搜索（博查）',
+  plan_route: '路线规划（高德地图）',
 }
 
 const toolLabel = (name: string) => TOOL_LABELS[name] || name
@@ -415,16 +377,12 @@ const uniqueToolCalls = (calls: Array<{ name: string }>) => {
   })
 }
 
-/** 温度可能为 null（上游未提供），避免渲染成 "null°" */
-const formatTemp = (value: number | null | undefined) =>
-  value === null || value === undefined ? '—' : value
-
-// 快速模板
+// 快速模板：每句都是能直接用的真实需求
 const templates = [
-  { icon: '🌸', title: '日本赏樱', desc: '4月初去日本东京，5天，2人，赏樱之旅' },
-  { icon: '🏖', title: '海岛度假', desc: '想去三亚，3天，亲子游，预算1万' },
-  { icon: '🏔', title: '云南自由行', desc: '丽江大理，7天，2人，休闲游' },
-  { icon: '🇹🇭', title: '泰国泼水节', desc: '4月中旬去曼谷，4天，预算5000' },
+  { title: '赏樱', desc: '4 月初去日本东京赏樱，5 天，2 人，预算 2 万' },
+  { title: '亲子海岛', desc: '想去三亚，3 天，带孩子，预算 1 万，别安排太赶' },
+  { title: '云南自由行', desc: '丽江大理，7 天，2 人，休闲游，住得舒服一点' },
+  { title: '泰国泼水节', desc: '4 月中旬去曼谷，4 天，预算 5000' },
 ]
 
 const formatTime = (timestamp: string) => {
@@ -432,17 +390,6 @@ const formatTime = (timestamp: string) => {
   return date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
 }
 
-const renderMarkdown = (content: string) => {
-  // 简单的 Markdown 渲染
-  return content
-    .replace(/^### (.+)$/gm, '<h3>$1</h3>')
-    .replace(/^## (.+)$/gm, '<h2>$1</h2>')
-    .replace(/^# (.+)$/gm, '<h1>$1</h1>')
-    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-    .replace(/\*(.+?)\*/g, '<em>$1</em>')
-    .replace(/^- (.+)$/gm, '<li>$1</li>')
-    .replace(/\n/g, '<br>')
-}
 
 const useTemplate = (template: typeof templates[0]) => {
   inputMessage.value = template.desc
@@ -532,7 +479,7 @@ const handleAction = (action: string) => {
     if (target) {
       handleExportPdf(target)
     } else {
-      Message.warning('还没有可导出的完整行程，先让我帮你规划一份吧')
+      Message.warning('还没有可导出的完整行程，先让我帮你排一份')
     }
   }
 }
@@ -567,285 +514,367 @@ onMounted(() => {
 </script>
 
 <style scoped>
-.ai-chat-page {
+.chat-page {
   display: flex;
   flex-direction: column;
-  height: calc(100vh - 140px);
-  max-width: 900px;
-  margin: 0 auto;
-  padding: 0 16px;
+  height: calc(100vh - 156px);
+  min-height: 520px;
+  padding-top: 26px;
 }
 
-.page-header {
-  text-align: center;
-  padding: 24px 0;
+/* 还没有对话时不要撑满一屏，否则示例和输入框之间会出现大片空白 */
+.chat-page--empty {
+  height: auto;
+  min-height: 0;
 }
 
-.page-header h1 {
-  font-size: 28px;
-  margin-bottom: 8px;
+.chat-page--empty .chat-log {
+  flex: none;
+  overflow: visible;
+  padding-bottom: 0;
 }
 
-.subtitle {
-  color: #86909c;
+.chat-head {
+  flex: none;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--rule-strong);
+}
+
+.chat-head h1 {
+  font-size: 26px;
+}
+
+.chat-lede {
+  margin: 8px 0 0;
+  max-width: 70ch;
+  color: var(--ink-2);
   font-size: 14px;
 }
 
-.quick-templates {
-  margin-bottom: 24px;
+/* ————————————————————————— 示例开头 ————————————————————————— */
+
+.samples {
+  flex: none;
+  margin-top: 22px;
+  border: 1px solid var(--rule);
+  background: var(--plot);
 }
 
-.quick-templates h3 {
-  font-size: 16px;
-  margin-bottom: 12px;
-  color: #86909c;
-}
-
-.template-list {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 16px;
-}
-
-.template-card {
-  cursor: pointer;
-  transition: transform 0.2s;
-}
-
-.template-card:hover {
-  transform: translateY(-4px);
-}
-
-.template-icon {
-  font-size: 48px;
-  text-align: center;
-  padding: 24px 0;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-  color: white;
-}
-
-.template-title {
-  font-weight: 600;
-  margin-bottom: 4px;
-}
-
-.template-desc {
+.samples-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 14px;
+  border-bottom: 1px solid var(--rule);
   font-size: 12px;
-  color: #86909c;
+  color: var(--ink-3);
+  background: var(--plot-2);
 }
 
-.chat-container {
+.sample {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 18px;
+  width: 100%;
+  padding: 13px 14px;
+  border: none;
+  border-top: 1px solid var(--rule);
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+  color: var(--ink);
+  transition: background 0.15s ease;
+}
+
+.sample:first-of-type {
+  border-top: none;
+}
+
+.sample:hover {
+  background: var(--magenta-tint);
+}
+
+.sample-text {
+  font-size: 16px;
+}
+
+.sample-tag {
+  flex: none;
+  font-size: 12px;
+  color: var(--ink-3);
+}
+
+/* ————————————————————————— 对话记录 ————————————————————————— */
+
+.chat-log {
   flex: 1;
   overflow-y: auto;
-  padding: 16px 0;
+  min-height: 0;
+  padding: 22px 4px 8px 0;
 }
 
-.message-list {
-  display: flex;
-  flex-direction: column;
+.log {
+  list-style: none;
+  margin: 0;
+  padding: 0 0 0 12px;
+  position: relative;
+}
+
+/* 贯穿整段对话的竖线：一轮就是线上的一个站点 */
+.log::before {
+  content: '';
+  position: absolute;
+  left: 3px;
+  top: 8px;
+  bottom: 8px;
+  width: 1px;
+  background: var(--rule);
+}
+
+.entry {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr);
   gap: 16px;
+  padding-bottom: 26px;
+  position: relative;
 }
 
-.message {
+.entry-gutter {
   display: flex;
-  gap: 12px;
-  align-items: flex-start;
+  justify-content: center;
+  padding-top: 5px;
 }
 
-.message.user {
-  flex-direction: row-reverse;
+.entry-mark {
+  width: 7px;
+  height: 7px;
+  background: var(--plot);
+  border: 1px solid var(--ink-2);
+  position: relative;
+  z-index: 1;
 }
 
-.message-content {
-  max-width: 75%;
+.entry--user .entry-mark {
+  background: var(--ink);
+  border-color: var(--ink);
 }
 
-.message.user .message-content {
-  align-items: flex-end;
+.entry--assistant .entry-mark {
+  border-color: var(--magenta);
+  border-width: 2px;
 }
 
-.message-header {
+.entry-mark--busy {
+  background: var(--magenta);
+  border-color: var(--magenta);
+  animation: busy-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes busy-pulse {
+  50% {
+    opacity: 0.25;
+  }
+}
+
+.entry-head {
   display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 4px;
-  font-size: 12px;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 7px;
 }
 
-.message.user .message-header {
-  flex-direction: row-reverse;
-}
-
-.sender-name {
-  font-weight: 600;
-}
-
-.message-time {
-  color: #86909c;
-}
-
-.user-message {
-  background: #165dff;
-  color: white;
-  padding: 12px 16px;
-  border-radius: 16px 16px 4px 16px;
-}
-
-.ai-message {
-  background: #f2f3f5;
-  padding: 16px;
-  border-radius: 16px 16px 16px 4px;
-  width: 100%;
-}
-
-.weather-card {
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-  color: white;
-  padding: 16px;
-  border-radius: 12px;
-  margin-bottom: 16px;
-}
-
-.weather-header {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 12px;
-  font-weight: 600;
-}
-
-.weather-days {
-  display: flex;
-  gap: 8px;
-}
-
-.weather-day {
-  text-align: center;
-  flex: 1;
-}
-
-.day-icon {
-  font-size: 24px;
-  margin: 4px 0;
-}
-
-.day-weather {
-  font-size: 12px;
-  opacity: 0.9;
-}
-
-.day-temp {
-  font-size: 11px;
-  opacity: 0.8;
-}
-
-.weather-tips {
-  margin-top: 12px;
-  padding-top: 12px;
-  border-top: 1px solid rgba(255, 255, 255, 0.2);
+.entry-who {
   font-size: 13px;
+  font-weight: 600;
 }
 
-.itinerary-preview {
-  background: white;
-  padding: 16px;
-  border-radius: 12px;
-  margin-bottom: 16px;
+.entry-time {
+  font-size: 11px;
+  color: var(--ink-3);
 }
 
-.itinerary-header {
+/* 用户原话：浅底 + 左侧墨线，不做气泡 */
+.said {
+  display: inline-block;
+  max-width: 66ch;
+  padding: 11px 15px;
+  background: var(--plot-2);
+  border-left: 2px solid var(--ink);
+  font-size: 15px;
+  white-space: pre-wrap;
+}
+
+/* AI 回复：一块绘图区 */
+.reply {
+  border: 1px solid var(--rule);
+  background: var(--plot);
+  padding: 16px 18px;
+}
+
+.calls {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
-  color: #165dff;
-  font-weight: 600;
-  margin-bottom: 12px;
+  padding-bottom: 14px;
+  margin-bottom: 14px;
+  border-bottom: 1px solid var(--rule);
 }
 
-.itinerary-actions {
+.calls-label {
+  font-size: 12px;
+  color: var(--ink-3);
+}
+
+.call-chip {
+  font-size: 12px;
+  color: var(--ink-2);
+  border: 1px solid var(--rule-strong);
+  padding: 1px 8px;
+}
+
+/* 天气面板由 WeatherCard 统一渲染，这里只留外边距 */
+.forecast-slot {
+  margin-bottom: 18px;
+}
+
+/* ————————————————————————— 行程导出 ————————————————————————— */
+
+.export-bar {
   display: flex;
-  gap: 8px;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 20px;
+  padding-top: 14px;
+  border-top: 1px solid var(--rule);
+}
+
+.export-hint {
+  font-size: 12px;
+  color: var(--ink-3);
 }
 
 .suggested-actions {
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin-top: 12px;
   flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 14px;
 }
 
 .action-label {
   font-size: 12px;
-  color: #86909c;
+  color: var(--ink-3);
 }
 
-.action-tag {
+.action-chip {
+  font: inherit;
+  font-size: 13px;
+  color: var(--ink-2);
+  background: transparent;
+  border: 1px solid var(--rule-strong);
+  padding: 2px 10px;
   cursor: pointer;
+  transition: color 0.15s ease, border-color 0.15s ease;
 }
 
-.input-area {
-  padding: 16px 0;
-  border-top: 1px solid #e5e6eb;
-  background: white;
+.action-chip:hover {
+  color: var(--magenta);
+  border-color: var(--magenta);
 }
 
-.input-actions {
+/* ————————————————————————— 进行中 ————————————————————————— */
+
+.busy {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  border: 1px solid var(--rule);
+  background: var(--plot);
+  padding: 14px 16px;
+}
+
+.busy-ruler {
+  position: relative;
+  flex: none;
+  width: 44px;
+  height: 9px;
+  background-image: repeating-linear-gradient(
+    to right,
+    var(--rule-strong) 0 1px,
+    transparent 1px 11px
+  );
+}
+
+.busy-marker {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 2px;
+  height: 9px;
+  background: var(--magenta);
+  animation: sweep 1.6s ease-in-out infinite alternate;
+}
+
+@keyframes sweep {
+  from {
+    left: 0;
+  }
+  to {
+    left: 42px;
+  }
+}
+
+.busy-text {
+  font-size: 13px;
+  color: var(--ink-2);
+}
+
+/* ————————————————————————— 输入 ————————————————————————— */
+
+.composer {
+  flex: none;
+  border: 1px solid var(--rule);
+  background: var(--plot);
+  padding: 12px;
+}
+
+.composer :deep(.arco-textarea-wrapper) {
+  border: none;
+  background: transparent;
+  padding: 0;
+}
+
+.composer :deep(.arco-textarea) {
+  background: transparent;
+  font-size: 15px;
+  padding: 2px 4px;
+}
+
+.composer-actions {
   display: flex;
   justify-content: space-between;
   margin-top: 12px;
-}
-
-.loading .ai-message {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.typing-indicator {
-  margin: 0;
-  color: #86909c;
-}
-
-/* 已调用的线上工具 */
-.tool-calls {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-  margin-bottom: 12px;
-}
-
-.tool-label {
-  font-size: 12px;
-  color: #86909c;
-}
-
-.tool-tag {
-  background: #e8f3ff;
-  color: #165dff;
-  border: none;
-}
-
-/* 行程导出 */
-.export-bar {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-top: 14px;
   padding-top: 12px;
-  border-top: 1px dashed #e5e6eb;
-  flex-wrap: wrap;
+  border-top: 1px solid var(--rule);
 }
 
-.export-hint {
-  font-size: 12px;
-  color: #86909c;
-}
+@media (max-width: 860px) {
+  .chat-page {
+    height: auto;
+    min-height: 0;
+  }
 
-.weather-source {
-  margin-top: 8px;
-  font-size: 11px;
-  opacity: 0.75;
+  .chat-log {
+    overflow: visible;
+    padding-right: 0;
+  }
+
+  .entry {
+    gap: 12px;
+  }
 }
 </style>

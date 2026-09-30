@@ -2,8 +2,16 @@
   <header class="app-header">
     <div class="header-inner">
       <router-link to="/" class="logo">
-        <span class="logo-icon">🧳</span>
-        <span class="logo-text">TravelAI</span>
+        <!-- 航线标：起点为品红，终点为墨色 -->
+        <svg class="logo-mark" viewBox="0 0 28 22" aria-hidden="true">
+          <path d="M4 17 L11 8 L17 12 L24 3" fill="none" stroke="currentColor" stroke-width="1.3" />
+          <circle cx="4" cy="17" r="2.6" class="logo-origin" />
+          <circle cx="24" cy="3" r="1.7" fill="currentColor" />
+        </svg>
+        <span class="logo-lockup">
+          <span class="logo-text">TravelAI</span>
+          <span class="logo-cn title-song">旅行智脑</span>
+        </span>
       </router-link>
 
       <nav class="nav">
@@ -32,8 +40,7 @@
           <a-button type="primary" size="small" @click="openLogin">
             登录 / 注册
           </a-button>
-        </template>
-      </div>
+        </template>      </div>
     </div>
 
     <a-modal
@@ -129,61 +136,155 @@ async function submit() {
 
 <style scoped>
 .app-header {
-  background: #fff;
-  border-bottom: 1px solid #e5e6eb;
   position: sticky;
   top: 0;
   z-index: 100;
+  background: var(--plot);
+  border-bottom: 1px solid var(--ink);
 }
 
 .header-inner {
-  max-width: 1200px;
+  max-width: calc(var(--page-max) + var(--rail) * 2);
   margin: 0 auto;
-  height: 60px;
+  height: 62px;
   display: flex;
   align-items: center;
-  gap: 32px;
+  gap: 36px;
   padding: 0 24px;
 }
 
 .logo {
   display: flex;
   align-items: center;
-  gap: 8px;
-  font-weight: 700;
-  font-size: 18px;
+  gap: 10px;
+  color: var(--ink);
 }
 
-.logo-icon {
-  font-size: 22px;
+.logo-mark {
+  width: 30px;
+  height: 24px;
+  flex: none;
+  color: var(--ink);
+}
+
+.logo-origin {
+  fill: var(--magenta);
+}
+
+.logo-lockup {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.logo-text {
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
+.logo-cn {
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--ink-3);
 }
 
 .nav {
   display: flex;
-  gap: 24px;
+  gap: 22px;
   flex: 1;
 }
 
+/* 当前页用一小段品红刻度标记，而不是整条下划线 */
 .nav-item {
-  color: #4e5969;
+  position: relative;
+  color: var(--ink-2);
   font-size: 14px;
-  padding: 4px 0;
-  border-bottom: 2px solid transparent;
+  padding: 3px 0 6px;
+  transition: color 0.15s ease;
+}
+
+.nav-item::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  width: 0;
+  height: 2px;
+  background: var(--magenta);
+  transition: width 0.18s ease;
+}
+
+.nav-item:hover {
+  color: var(--ink);
 }
 
 .nav-item.router-link-exact-active {
-  color: #165dff;
-  border-bottom-color: #165dff;
+  color: var(--ink);
   font-weight: 600;
+}
+
+.nav-item.router-link-exact-active::after {
+  width: 16px;
 }
 
 .avatar {
   cursor: pointer;
-  background: #165dff;
+  background: var(--ink);
 }
 
 .switch-mode {
   margin-top: 12px;
   text-align: center;
+}
+
+@media (max-width: 860px) {
+  .header-inner {
+    gap: 16px;
+    padding: 0 16px;
+  }
+
+  .nav {
+    gap: 14px;
+  }
+
+  .logo-cn {
+    display: none;
+  }
+}
+
+/* 窄屏：导航不换行，放不下时横向滑动，而不是把字挤成竖排 */
+@media (max-width: 640px) {
+  .header-inner {
+    height: 56px;
+    gap: 12px;
+    padding: 0 14px;
+  }
+
+  .nav {
+    gap: 12px;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .nav::-webkit-scrollbar {
+    display: none;
+  }
+
+  .nav-item {
+    flex: none;
+    font-size: 13px;
+    white-space: nowrap;
+  }
+
+  .logo-text {
+    font-size: 15px;
+  }
+}
+
+@media (max-width: 420px) {
+  .logo-text {
+    display: none;
+  }
 }
 </style>

@@ -2,6 +2,81 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ==========================================================================
+   TravelAI ·「航图」设计层
+   出处：海图制图学。纸面是冷调海图纸，文字是制图墨，网格是经纬网，
+   唯一的强调色是图上用来画航线与灯标的品红。深度来自线宽与纸色，不来自阴影。
+   ========================================================================== */
+
+:root {
+  /* 纸面：航图桌与图廓内的绘图区（冷调，刻意避开奶油纸） */
+  --paper: #dde4e4;
+  --paper-2: #e6eceb;
+  --plot: #f2f5f4;
+  --plot-2: #e7edec;
+
+  /* 墨：所有文字与线条 */
+  --ink: #0e1b22;
+  --ink-2: #4a5d66;
+  --ink-3: #6b7e86;
+
+  /* 经纬网与图廓 */
+  --rule: #b9c6c6;
+  --rule-strong: #8fa1a1;
+
+  /* 航线品红：全站唯一强调色，只出现在「航线 / 当前所在 / 主操作」 */
+  --magenta: #c0266b;
+  --magenta-2: #a21c59;
+  --magenta-tint: #f7e6ee;
+
+  /* 浅滩青：只用于数据标记（天气、水温、次要指标） */
+  --shoal: #2e7f8c;
+  --shoal-tint: #e0ecee;
+
+  /* 陆地土黄：只用于地图与图表的底面色块 */
+  --sand: #d6c7a8;
+
+  /* 字体：界面用黑体，AI 写出的行程正文用宋体，像一份印出来的文件 */
+  --font-ui: 'PingFang SC', 'HarmonyOS Sans SC', 'Hiragino Sans GB',
+    'Microsoft YaHei', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-song: 'Songti SC', 'STSong', 'Source Han Serif SC', 'Noto Serif CJK SC',
+    'Noto Serif SC', 'SimSun', Georgia, serif;
+
+  --rail: 46px;
+  --page-max: 1180px;
+}
+
+/* ——— Arco 主题覆盖 ———
+   Arco 把色阶定义在 body 上，而变量按「最近祖先」继承，
+   所以覆盖必须写在 body 上，写在 :root 会被 body 挡住。 */
+body {
+  --gray-1: 242, 245, 244;
+  --gray-2: 231, 237, 236;
+  --gray-3: 214, 223, 222;
+  --gray-4: 185, 198, 198;
+  --gray-5: 154, 170, 171;
+  --gray-6: 122, 141, 146;
+  --gray-7: 96, 116, 122;
+  --gray-8: 74, 93, 102;
+  --gray-9: 32, 48, 56;
+  --gray-10: 14, 27, 34;
+
+  --arcoblue-1: 250, 235, 242;
+  --arcoblue-2: 243, 201, 220;
+  --arcoblue-3: 233, 167, 198;
+  --arcoblue-4: 220, 124, 172;
+  --arcoblue-5: 205, 84, 145;
+  --arcoblue-6: 192, 38, 107;
+  --arcoblue-7: 162, 28, 89;
+  --arcoblue-8: 130, 20, 70;
+  --arcoblue-9: 100, 14, 52;
+  --arcoblue-10: 70, 9, 35;
+
+  --border-radius-small: 2px;
+  --border-radius-medium: 2px;
+  --border-radius-large: 3px;
+}
+
 * {
   box-sizing: border-box;
 }
@@ -14,13 +89,382 @@ body,
 }
 
 body {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
-    'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
-  background: #f7f8fa;
-  color: #1d2129;
+  font-family: var(--font-ui);
+  font-size: 15px;
+  line-height: 1.7;
+  color: var(--ink);
+  background-color: var(--paper);
+  /* 极淡的经纬网，仅供纸面质感，不参与信息层级 */
+  background-image: linear-gradient(
+      to right,
+      rgba(14, 27, 34, 0.045) 1px,
+      transparent 1px
+    ),
+    linear-gradient(to bottom, rgba(14, 27, 34, 0.045) 1px, transparent 1px);
+  background-size: 88px 88px;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }
 
 a {
   color: inherit;
   text-decoration: none;
+}
+
+/* 焦点：细品红描边，不用 Arco 默认的蓝色光晕 */
+:focus-visible {
+  outline: 2px solid var(--magenta);
+  outline-offset: 1px;
+  border-radius: 1px;
+}
+
+::selection {
+  background: var(--magenta-tint);
+  color: var(--ink);
+}
+
+/* ————————————————————————————— 排版基元 ————————————————————————————— */
+
+h1,
+h2,
+h3,
+h4 {
+  font-weight: 600;
+  line-height: 1.35;
+  margin: 0;
+}
+
+.title-song {
+  font-family: var(--font-song);
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
+/* 数字与坐标：等宽数字，让时刻与金额成列对齐 */
+.num {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum' 1;
+}
+
+.page-head {
+  padding: 30px 0 18px;
+  border-bottom: 1px solid var(--rule-strong);
+  margin-bottom: 22px;
+}
+
+.page-head h1 {
+  font-family: var(--font-song);
+  font-size: 34px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.tb-sub {
+  margin-left: 8px;
+  font-size: 12px;
+  color: var(--ink-3);
+}
+
+.page-head .lede {
+  margin-top: 8px;
+  color: var(--ink-2);
+  max-width: 62ch;
+}
+
+/* 面板之间的统一间距 */
+.stack {
+  margin-top: 18px;
+}
+
+/* 行程状态：一个小方块加中文说明，不用彩色胶囊 */
+.status {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 13px;
+  color: var(--ink-2);
+}
+
+.status::before {
+  content: '';
+  width: 7px;
+  height: 7px;
+  border: 1px solid var(--ink-3);
+  flex: none;
+}
+
+.status--live {
+  color: var(--magenta-2);
+}
+
+.status--live::before {
+  background: var(--magenta);
+  border-color: var(--magenta);
+}
+
+.status--done::before {
+  background: var(--rule-strong);
+  border-color: var(--rule-strong);
+}
+
+/* ————————————————————————————— 图廓：绘图面板 ————————————————————————————— */
+
+.plot {
+  background: var(--plot);
+  border: 1px solid var(--rule);
+  border-radius: 2px;
+  position: relative;
+}
+
+.plot-label {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--rule);
+  font-size: 13px;
+  color: var(--ink-2);
+}
+
+.plot-label .plot-label-name {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.plot-body {
+  padding: 16px;
+}
+
+/* 面板左上角的小十字，提示这是一块绘图区 */
+.tick-cross::before {
+  content: '';
+  position: absolute;
+  top: -4px;
+  left: -4px;
+  width: 7px;
+  height: 7px;
+  background-image: linear-gradient(var(--rule-strong), var(--rule-strong)),
+    linear-gradient(var(--rule-strong), var(--rule-strong));
+  background-size: 7px 1px, 1px 7px;
+  background-position: center;
+  background-repeat: no-repeat;
+}
+
+/* ————————————————————————————— Arco 主题贴合 ————————————————————————————— */
+
+.arco-card {
+  border-radius: 2px;
+  border: 1px solid var(--rule);
+  box-shadow: none;
+  background: var(--plot);
+}
+
+.arco-card .arco-card-header {
+  border-bottom: 1px solid var(--rule);
+  padding: 12px 16px;
+  height: auto;
+  font-weight: 600;
+}
+
+.arco-card .arco-card-header-title {
+  font-size: 14px;
+  color: var(--ink);
+}
+
+.arco-card .arco-card-body {
+  padding: 16px;
+}
+
+.arco-btn {
+  font-family: var(--font-ui);
+  border-radius: 2px;
+  font-weight: 500;
+}
+
+.arco-btn-primary:not(.arco-btn-disabled) {
+  box-shadow: none;
+}
+
+.arco-input-wrapper,
+.arco-textarea-wrapper,
+.arco-select-view,
+.arco-picker,
+.arco-input-number {
+  border-radius: 2px;
+}
+
+.arco-tag {
+  border-radius: 2px;
+  font-family: var(--font-ui);
+}
+
+.arco-modal {
+  border-radius: 3px;
+}
+
+.arco-modal .arco-modal-header {
+  border-bottom: 1px solid var(--rule);
+}
+
+.arco-timeline-item-dot {
+  border-width: 2px;
+}
+
+.arco-empty-description {
+  color: var(--ink-3);
+}
+
+.arco-alert {
+  border-radius: 2px;
+  border: 1px solid var(--rule);
+  background: var(--plot-2);
+}
+
+.arco-steps-item-title {
+  font-size: 13px;
+}
+
+.arco-avatar {
+  font-family: var(--font-ui);
+}
+
+.arco-dropdown,
+.arco-select-dropdown {
+  border-radius: 2px;
+}
+
+.arco-tooltip-content {
+  border-radius: 2px;
+  font-family: var(--font-ui);
+}
+
+/* ————————————————————————————— 行程正文（AI 写出的文件） ————————————————————————————— */
+/* 全站唯一用宋体的长文：界面是绘图台，规划正文是印出来的行程单。 */
+
+.markdown-content {
+  font-family: var(--font-song);
+  font-size: 16px;
+  line-height: 1.95;
+  color: var(--ink);
+  max-width: 72ch;
+}
+
+.markdown-content h1,
+.markdown-content h2 {
+  font-family: var(--font-song);
+  font-size: 21px;
+  font-weight: 700;
+  margin: 26px 0 10px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--rule);
+}
+
+.markdown-content h1:first-child,
+.markdown-content h2:first-child {
+  margin-top: 0;
+}
+
+.markdown-content h3 {
+  font-size: 16px;
+  font-weight: 700;
+  margin: 20px 0 6px;
+  color: var(--ink);
+}
+
+.markdown-content h3::before {
+  content: '';
+  display: inline-block;
+  width: 4px;
+  height: 4px;
+  margin-right: 9px;
+  border-radius: 50%;
+  background: var(--magenta);
+  vertical-align: 0.28em;
+}
+
+.markdown-content p {
+  margin: 0 0 12px;
+}
+
+.markdown-content strong {
+  font-weight: 700;
+}
+
+.markdown-content em {
+  font-style: normal;
+  color: var(--magenta-2);
+}
+
+.markdown-content ul {
+  margin: 0 0 12px;
+  padding: 0;
+}
+
+.markdown-content li {
+  list-style: none;
+  position: relative;
+  padding-left: 20px;
+  margin: 0 0 6px;
+}
+
+.markdown-content li::before {
+  content: '';
+  position: absolute;
+  left: 2px;
+  top: 0.78em;
+  width: 9px;
+  height: 1px;
+  background: var(--rule-strong);
+}
+
+.markdown-content hr {
+  border: none;
+  border-top: 1px solid var(--rule);
+  margin: 22px 0;
+}
+
+.markdown-content blockquote {
+  margin: 0 0 14px;
+  padding: 2px 0 2px 14px;
+  border-left: 2px solid var(--rule-strong);
+  color: var(--ink-2);
+}
+
+.markdown-content code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.88em;
+  background: var(--plot-2);
+  padding: 1px 4px;
+}
+
+/* ————————————————————————————— 动效 ————————————————————————————— */
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* 滚动条：与纸面同色系，不抢视线 */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--paper-2);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--rule);
+  border: 2px solid var(--paper-2);
+  border-radius: 6px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--rule-strong);
 }

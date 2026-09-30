@@ -1,78 +1,107 @@
 <template>
-  <div class="trip-create-page">
-    <a-card class="create-card">
-      <template #title>
-        <div class="card-title">
-          <icon-plus />
-          <span>创建旅行行程</span>
-        </div>
-      </template>
+  <div class="create-page">
+    <header class="page-head">
+      <h1>新建行程</h1>
+      <p class="lede">
+        先记下时间和预算，行程内容之后可以随时补。想让 AI 直接出方案，去「智能规划」说一句更方便。
+      </p>
+    </header>
 
-      <a-form :model="form" layout="vertical" @submit-success="handleSubmit">
-        <a-grid :cols="24" :col-gap="16">
-          <a-grid-item :span="24">
-            <a-form-item field="title" label="行程标题" :rules="[{ required: true, message: '请输入标题' }]">
-              <a-input v-model="form.title" placeholder="例如：东京赏樱 5 日游" />
-            </a-form-item>
-          </a-grid-item>
+    <section class="plot">
+      <div class="plot-label tick-cross">
+        <span class="plot-label-name">行程基本信息</span>
+        <span>带 * 的为必填</span>
+      </div>
 
-          <a-grid-item :span="24">
-            <a-form-item field="destination" label="目的地" :rules="[{ required: true, message: '请输入目的地' }]">
-              <a-input v-model="form.destination" placeholder="例如：日本东京" />
-            </a-form-item>
-          </a-grid-item>
+      <div class="plot-body">
+        <a-form :model="form" layout="vertical" @submit-success="handleSubmit">
+          <a-grid :cols="24" :col-gap="16">
+            <a-grid-item :span="24">
+              <a-form-item
+                field="title"
+                label="行程标题"
+                :rules="[{ required: true, message: '请输入标题' }]"
+              >
+                <a-input v-model="form.title" placeholder="例如：东京赏樱 5 日" />
+              </a-form-item>
+            </a-grid-item>
 
-          <a-grid-item :span="24">
-            <a-form-item field="dates" label="出行日期" :rules="[{ required: true, message: '请选择日期' }]">
-              <a-range-picker v-model="dateRange" style="width: 100%" />
-            </a-form-item>
-          </a-grid-item>
+            <a-grid-item :span="24">
+              <a-form-item
+                field="destination"
+                label="目的地"
+                :rules="[{ required: true, message: '请输入目的地' }]"
+              >
+                <a-input v-model="form.destination" placeholder="例如：日本东京" />
+              </a-form-item>
+            </a-grid-item>
 
-          <a-grid-item :span="12">
-            <a-form-item field="budget" label="预算（元）">
-              <a-input-number v-model="form.budget" :min="0" :step="1000" style="width: 100%" />
-            </a-form-item>
-          </a-grid-item>
+            <a-grid-item :span="24">
+              <a-form-item
+                field="dates"
+                label="出行日期"
+                :rules="[{ required: true, message: '请选择日期' }]"
+              >
+                <a-range-picker v-model="dateRange" style="width: 100%" />
+              </a-form-item>
+            </a-grid-item>
 
-          <a-grid-item :span="12">
-            <a-form-item field="travelers" label="出行人数">
-              <a-input-number v-model="form.travelers" :min="1" :max="30" style="width: 100%" />
-            </a-form-item>
-          </a-grid-item>
+            <a-grid-item :span="12">
+              <a-form-item field="budget" label="预算（元）">
+                <a-input-number
+                  v-model="form.budget"
+                  :min="0"
+                  :step="1000"
+                  style="width: 100%"
+                />
+              </a-form-item>
+            </a-grid-item>
 
-          <a-grid-item :span="24">
-            <a-form-item field="travel_style" label="旅行风格">
-              <a-select v-model="form.travel_style" placeholder="请选择旅行风格">
-                <a-option v-for="s in styles" :key="s.value" :value="s.value">
-                  {{ s.label }}
-                </a-option>
-              </a-select>
-            </a-form-item>
-          </a-grid-item>
+            <a-grid-item :span="12">
+              <a-form-item field="travelers" label="出行人数">
+                <a-input-number
+                  v-model="form.travelers"
+                  :min="1"
+                  :max="30"
+                  style="width: 100%"
+                />
+              </a-form-item>
+            </a-grid-item>
 
-          <a-grid-item :span="24">
-            <a-form-item field="notes" label="补充需求">
-              <a-textarea
-                v-model="form.notes"
-                placeholder="例如：想看樱花、喜欢美食、避免太紧凑的行程..."
-                :auto-size="{ minRows: 3, maxRows: 6 }"
-              />
-            </a-form-item>
-          </a-grid-item>
-        </a-grid>
+            <a-grid-item :span="24">
+              <a-form-item field="travel_style" label="旅行风格">
+                <a-select v-model="form.travel_style" placeholder="请选择旅行风格">
+                  <a-option v-for="s in styles" :key="s.value" :value="s.value">
+                    {{ s.label }}
+                  </a-option>
+                </a-select>
+              </a-form-item>
+            </a-grid-item>
 
-        <div class="form-actions">
-          <a-button @click="fillAiPrompt" :loading="aiLoading">
-            <template #icon><icon-robot /></template>
-            AI 帮我填写
-          </a-button>
-          <a-button type="primary" html-type="submit" :loading="submitting">
-            <template #icon><icon-save /></template>
-            创建行程
-          </a-button>
-        </div>
-      </a-form>
-    </a-card>
+            <a-grid-item :span="24">
+              <a-form-item field="notes" label="补充需求">
+                <a-textarea
+                  v-model="form.notes"
+                  placeholder="例如：想看樱花、喜欢小店和市集、每天别排超过三个景点"
+                  :auto-size="{ minRows: 3, maxRows: 6 }"
+                />
+              </a-form-item>
+            </a-grid-item>
+          </a-grid>
+
+          <div class="form-actions">
+            <a-button @click="fillAiPrompt" :loading="aiLoading">
+              <template #icon><icon-robot /></template>
+              AI 帮我填写
+            </a-button>
+            <a-button type="primary" html-type="submit" :loading="submitting">
+              <template #icon><icon-save /></template>
+              创建行程
+            </a-button>
+          </div>
+        </a-form>
+      </div>
+    </section>
   </div>
 </template>
 
@@ -95,7 +124,7 @@ const styles = [
   { label: '探险挑战', value: 'adventurous' },
   { label: '文化探索', value: 'cultural' },
   { label: '亲子游', value: 'family' },
-  { label: '蜜月/情侣', value: 'romantic' },
+  { label: '蜜月 / 情侣', value: 'romantic' },
   { label: '商务旅行', value: 'business' },
   { label: '美食之旅', value: 'foodie' },
   { label: '摄影采风', value: 'photography' },
@@ -149,17 +178,13 @@ async function fillAiPrompt() {
     const res = await agentApi.chat({
       message: `我想去${text}，帮我规划行程`,
     })
-    // 从 AI 回复中尽量补全目的地
-    if (!form.destination) {
-      form.destination = form.destination || ''
-    }
     if (!form.title) {
       form.title = text.slice(0, 20) + ' 之旅'
     }
-    Message.success('已根据 AI 建议填充表单')
+    Message.success('已根据 AI 建议填写表单')
     console.info('AI 建议：', res.message)
   } catch {
-    Message.error('AI 服务暂不可用，请手动填写')
+    Message.error('AI 服务暂时不可用，请手动填写')
   } finally {
     aiLoading.value = false
   }
@@ -167,15 +192,8 @@ async function fillAiPrompt() {
 </script>
 
 <style scoped>
-.trip-create-page {
-  max-width: 760px;
-  margin: 0 auto;
-}
-
-.card-title {
-  display: flex;
-  align-items: center;
-  gap: 8px;
+.create-page {
+  max-width: 720px;
 }
 
 .form-actions {
