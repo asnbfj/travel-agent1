@@ -1,0 +1,50 @@
+version: '3.8'
+
+services:
+  # 后端服务（生产模式，多 worker）
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: travelai-backend
+    restart: always
+    environment:
+      - DEBUG=false
+      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@db:5432/travelai
+      - SECRET_KEY=${SECRET_KEY}
+      # LLM
+      - LLM_PROVIDER=${LLM_PROVIDER:-deepseek}
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - QWEN_API_KEY=${QWEN_API_KEY}
+      # 线上数据源（缺失时相关功能会直接报错，不做模拟兜底）
+      - AMAP_API_KEY=${AMAP_API_KEY}
+      - BOCHA_API_KEY=${BOCHA_API_KEY}
+    depends_on:
+      - db
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 4
+
+  db:
+    image: postgres:15-alpine
+    container_name: travelai-db
+    restart: always
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres}
+      - POSTGRES_DB=travelai
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: travelai-frontend
+    restart: always
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+
+volumes:
+  postgres_data:

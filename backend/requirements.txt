@@ -1,0 +1,54 @@
+# FastAPI 框架
+fastapi==0.109.2
+uvicorn[standard]==0.27.1
+python-multipart==0.0.9
+pydantic==2.6.1
+pydantic-settings==2.1.0
+# EmailStr 校验依赖
+email-validator==2.1.1
+
+# 数据库
+sqlalchemy[asyncio]==2.0.25
+asyncpg==0.29.0
+aiosqlite==0.19.0
+# SQLAlchemy 异步驱动依赖
+greenlet==3.0.3
+
+# LangChain & LangGraph
+# 注意：langchain==0.1.20 要求 langchain-community>=0.0.38，因此此处使用 0.0.38
+langchain==0.1.20
+langchain-core==0.1.53
+langchain-community==0.0.38
+langgraph==0.0.40
+langchain-openai==0.0.8
+
+# LLM
+openai==1.12.0
+langchain-openai==0.0.8
+
+# HTTP 客户端
+httpx==0.26.0
+
+# PDF 导出（行程下载）
+# 使用 ReportLab 内置中文 CID 字体（STSong-Light），无需字体文件，Docker 友好
+reportlab==5.0.1
+
+# JWT 认证
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+# passlib 1.7.4 与 bcrypt>=4.1 不兼容，锁定 4.0.1
+bcrypt==4.0.1
+
+# 工具库
+python-dotenv==1.0.1
+# 注意：tiktoken 保留。它虽未被业务代码直接 import，但 LangChain 在
+# 统计 token 时会按需加载，删除可能导致相关调用报 ImportError。
+tiktoken==0.5.2
+
+# 开发工具
+pytest==8.0.0
+# 注意：pytest-asyncio==0.23.4 要求 pytest<8，与 pytest==8.0.0 冲突，故使用 0.23.6
+pytest-asyncio==0.23.6
+pytest-cov==4.1.0
+# PDF 测试：提取 PDF 文本以验证「文字可选中/可搜索」
+pypdf==6.19.0
