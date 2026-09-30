@@ -8,6 +8,7 @@
 这也正是选择 ReportLab 而非「截图转 PDF」方案的原因。
 """
 import io
+import re
 
 import pytest
 import pypdf
@@ -93,21 +94,108 @@ def test_pdf_markdown_syntax_does_not_leak():
     assert "含火山公园" in text
 
 
-def test_pdf_includes_weather_block():
+def test_pdf_does_not_inject_duplicate_weather_block():
+    """天气卡不再单独插入
+
+    模型正文里通常已经自带一张天气表，页首再插一张会让同一份数据出现两次。
+    因此 weather_info 只是**保持 API 契约**，不再渲染。
+    """
     text = _extract(build_itinerary_pdf(title="北海 3 天行程", content=SAMPLE_MD,
                                         weather_info=WEATHER, destination="北海"))
-    assert "天气速览" in text
-    assert "高德地图" in text          # 数据来源
-    assert "防暑防晒" in text          # 出行提示
-    assert "27~32°C" in text           # 气温区间
-    assert "南风1-3级" in text
+    # SAMPLE_MD 自带「一、天气速览」标题，因此只应出现 1 次（来自正文）；
+    # 若又注入了一张独立天气卡，这里会变成 2 次
+    assert text.count("天气速览") == 1, "不应再注入独立的天气速览表"
+    assert "防暑防晒" not in text, "天气卡内容不应重复出现在正文之外"
+    assert "27~32°C" not in text, "天气卡气温不应出现"
+    # 正文自身的天气内容必须保留
+    assert "多云天" in text
 
 
-def test_pdf_renders_missing_temperature_as_placeholder():
-    """上游可能不给气温，不能渲染成 None°C"""
-    text = _extract(build_itinerary_pdf(title="T", content="正文", weather_info=WEATHER))
-    assert "None" not in text
-    assert "—" in text
+def test_pdf_accepts_weather_info_without_error():
+    """weather_info 参数保留以维持 API 契约，传入也不应报错"""
+    pdf = build_itinerary_pdf(title="T", content="正文", weather_info=WEATHER)
+    assert pdf.startswith(b"%PDF")
+
+
+def test_pdf_converts_semantic_emoji_to_text_labels():
+    """有语义的 emoji 转成文字标记，而不是丢弃信息"""
+    md = "## 行程\n\n> ⚠️ 回程 802km 建议中途休整\n\n- 💡 记得带雨具\n- 📌 涠洲岛先订船票\n"
+    text = _extract(build_itinerary_pdf(title="T", content=md))
+
+    assert "【注意】" in text and "回程 802km" in text
+    assert "【提示】" in text and "记得带雨具" in text
+    assert "【备注】" in text and "先订船票" in text
+
+
+def test_pdf_drops_decorative_emoji_without_leaving_gaps():
+    """装饰性 emoji 被剔除后，不能在行首留下空洞
+
+    内置字体不含 emoji 字形，若原样输出会渲染成**空白**（实测每处 emoji 墨迹为 0），
+    表现为标题前凭空多出一段缩进。
+    """
+    md = "### 🚗 Day 1｜银滩看海\n\n- 🌊 上午：北海银滩\n"
+    text = _extract(build_itinerary_pdf(title="T", content=md))
+
+    assert "Day 1｜银滩看海" in text
+    assert "上午：北海银滩" in text
+    assert not re.search(r"[\U0001F000-\U0001FAFF]", text), "emoji 不应残留"
+    assert " Day 1" not in text, "剔除 emoji 后不应留下前导空格"
+
+
+def test_pdf_no_unrenderable_character_enters_output():
+    """按字体实际 cmap 兜底：不支持的字不能进入成品，否则会变成空白"""
+    from app.services import pdf_service
+
+    md = "价格 ¥18,600 ｜ ℃ ° → ～ ★ ✓ ① ± ≤ ≈ 「引号」\n"
+    text = _extract(build_itinerary_pdf(title="T", content=md))
+
+    fonts = pdf_service._ensure_fonts()
+    if fonts.supported is None:
+        pytest.skip("未加载内置字体，无法做字符能力校验")
+    leftover = [ch for ch in text if ch not in " \n\t" and ord(ch) not in fonts.supported]
+    assert not leftover, f"成品中存在字体无法渲染的字符：{leftover}"
+
+
+def test_pdf_bold_uses_real_bold_weight():
+    """加粗必须是真字重，而不是用颜色冒充加粗"""
+    from app.services import pdf_service
+
+    fonts = pdf_service._ensure_fonts()
+    if fonts.regular == pdf_service.FALLBACK_FONT:
+        pytest.skip("未加载内置字体（回退 CID 字体无粗体字形）")
+    assert fonts.bold != fonts.regular, "粗体应指向独立的 Bold 字重"
+
+
+def test_pdf_bullet_markers_survive_text_extraction():
+    """项目符号必须能正确复制出来
+
+    ReportLab 默认用 Helvetica 画 bullet，而它是未嵌入的标准字体、没有 ToUnicode
+    映射，会让复制/搜索到的项目符号变成控制字符 U+007F。
+    """
+    text = _extract(build_itinerary_pdf(title="T", content="- 甲\n- 乙\n\n1. 丙\n"))
+
+    assert "\x7f" not in text, "项目符号不应退化成控制字符"
+    assert text.count("•") == 2
+    assert "1." in text and "丙" in text
+
+
+def test_pdf_footer_has_page_number():
+    text = _extract(build_itinerary_pdf(title="T", content="正文"))
+    assert "第 1 页" in text
+
+
+def test_pdf_table_header_is_not_wrapped():
+    """表头必须单行放得下
+
+    曾用 `len()` 估算列宽，低估中文占宽，把「数据来源」折成了「数据来 / 源」。
+    """
+    md = ("| 段 | 日期 | 距离 | 预计耗时 | 过路费 | 数据来源 |\n"
+          "|---|---|---|---|---|---|\n"
+          "| 贵阳 → 南宁 | 10/2 08:00 出发 | 600.35 km | 约 7 小时 47 分 | 约 417 元 | 高德地图 |\n")
+    text = _extract(build_itinerary_pdf(title="T", content=md))
+
+    assert "数据来源" in text
+    assert "数据来\n源" not in text
 
 
 def test_pdf_without_weather_still_builds():

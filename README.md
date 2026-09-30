@@ -50,6 +50,7 @@ travel-agent1/
 │   │   │       ├── route_tools.py   booking_tools.py
 │   │   │       └── amap_client.py   bocha_client.py
 │   │   │           collector.py     errors.py
+│   │   ├── assets/fonts/        # NotoSansSC Regular/Bold（PDF 用，SIL OFL）
 │   │   ├── llm/client.py        # LLM 客户端（供应商可切换）
 │   │   ├── services/            # trip_service / plan_extract / pdf_service
 │   │   └── utils/               # helpers / auth
@@ -234,9 +235,10 @@ runtime_config.json  >  .env  >  Settings 字段默认值
 
 **导出 PDF**（`POST /api/v1/agent/export/pdf`）
 
-- ReportLab 将 Markdown 排版为 PDF，支持标题、嵌套列表、表格、引用、代码块与行内强调
-- 使用内置 Adobe CID 字体 `STSong-Light`，**不需要字体文件**，`python:3.11-slim` 镜像可直接用；输出为真实文本，可选中、可搜索
-- 已知取舍：CID 字体只有单一字重，无法真正加粗，`**重点**` 以主色强调代替
+- ReportLab 将 Markdown 忠实排版为 PDF，支持标题、嵌套列表、表格、引用、代码块与行内强调
+- 版面极简：顶部只有标题与生成时间，底部只有页码，正文就是模型输出的 Markdown 本身
+- 中文字体内置于 `backend/app/assets/fonts/`（Noto Sans SC，SIL OFL 1.1，见同目录 `OFL.txt`），**加粗是真正的 Bold 字重**；字体按需子集化，PDF 体积约 170KB，输出为真实文本，可选中、可搜索
+- 内置字体不含 emoji 字形，直接输出会渲染成**空白空洞**。因此 `⚠️ / 💡 / 📌` 会转成 `【注意】/【提示】/【备注】`，其余装饰性 emoji 予以剔除；并会按字体实际覆盖范围逐字符兜底，确保不留空洞
 
 **保存到「我的行程」**
 

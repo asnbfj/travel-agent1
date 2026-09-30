@@ -91,8 +91,9 @@ async def export_itinerary_pdf(
 ):
     """把行程导出为 PDF 并下载
 
-    文字为真实文本（可选中、可搜索），中文字体使用 ReportLab 内置 CID 字体，
-    不依赖任何字体文件或在目标机器上安装字体。
+    文字为真实文本（可选中、可搜索）。中文字体来自随仓库分发的
+    `assets/fonts/NotoSansSC-{Regular,Bold}.ttf`（SIL OFL 1.1），
+    因此加粗是真正的 Bold 字重；不需要在目标机器上安装任何系统字体。
     """
     content = (request.content or "").strip()
     if not content:
