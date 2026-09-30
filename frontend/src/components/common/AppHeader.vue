@@ -18,6 +18,7 @@
         <router-link to="/" class="nav-item">首页</router-link>
         <router-link to="/ai-chat" class="nav-item">智能规划</router-link>
         <router-link to="/plan" class="nav-item">我的行程</router-link>
+        <router-link to="/settings" class="nav-item">配置</router-link>
         <router-link to="/profile" class="nav-item">我的</router-link>
       </nav>
 

@@ -167,6 +167,7 @@ pip install -r requirements.txt
 # 配置环境变量（模板在项目根目录）
 cp ../.env.example .env
 # 编辑 .env，填入 DEEPSEEK_API_KEY / OPENAI_API_KEY / QWEN_API_KEY 之一
+# （也可以启动后在网页「配置」页里填，无需改文件、无需重启，见下文「网页端配置 API」）
 
 # 初始化数据库
 python scripts/init_db.py
@@ -194,7 +195,7 @@ npm run dev
 >
 > 必需配置：
 >
-> | 变量 | 用途 | 申请地址 |
+> | 变量 | 用途 | 申请地址 | 点击配置按钮进行配置，模型选择一个就可以
 > | --- | --- | --- |
 > | `DEEPSEEK_API_KEY`（或 `OPENAI_API_KEY` / `QWEN_API_KEY`） | 大模型对话与工具调用 | 对应厂商开放平台 |
 > | `AMAP_API_KEY` | 天气查询 / 路线规划 | <https://console.amap.com/dev/key/app>（须选「Web 服务」类型） |
@@ -300,6 +301,49 @@ curl -X POST http://localhost:8000/api/v1/agent/export/pdf \
 - **宁可留空也不猜错**：目的地推断不出来时返回空串并提示用户补填；正文里「数据发布于 2026-09-30」这类**时间戳不会被当成出发日期**；不存在的日期（如 2 月 30 日）与明显离谱的年份会被丢弃。
 - **保存后的落库结构**：`generated_plan = {content, weather_info, source_message, generated_at}`，因此行程详情页能直接展示 AI 规划正文与天气卡片（与「导出 PDF」共用同一份数据）。
 - **同时修掉的一个旧问题**：`TripService.save_generated_plan()` 此前从未被任何代码调用，导致「我的行程」页的规划内容一直是空的——现已接入 `/from-plan`。
+
+## 网页端配置 API
+
+无需编辑 `.env`、无需重启服务，直接在网页上配置三组外部依赖：导航栏 **「配置」**（`/settings`）→ 分别填写 **大模型**（供应商 / API Key / 模型名 / Base URL）、**高德地图**（API Key / Base URL）、**博查 AI 搜索**（API Key / Base URL / 检索路径），每区都可单独 **「测试连接」** 与 **「保存」**。
+
+### 配置优先级
+
+```
+runtime_config.json  >  .env  >  Settings 字段默认值
+```
+
+网页保存的内容写入 `backend/runtime_config.json`（已加入 `.gitignore`，文件权限 `0600`）。**没有在网页填过的字段继续沿用 `.env`**，因此两种方式可以混用；`.env` 依旧是面向部署者的默认值入口。
+
+### 立即生效的实现（这里有个反直觉的点）
+
+`app/llm/client.py`、`app/agent/tools/amap_client.py`、`app/agent/tools/bocha_client.py` 都在**模块导入时**执行了 `settings = get_settings()`，各自固化了一个引用。因此 `get_settings.cache_clear()` **不解决问题**——清缓存只会让下次调用得到一个新的 `Settings` 对象，而那三个模块仍然指向旧对象。
+
+由于 `get_settings()` 返回的是**同一个可变对象**，`app/runtime_config.py` 的 `apply_overrides()` 直接对该单例 `setattr`，所有持有者同步看到新值，无需改动那三个模块。随后：
+
+- **LLM 客户端**是全局单例（`_llm_client`），必须 `reset_llm_client()`；
+- **高德 / 博查客户端**在每次工具调用时新建（`AmapClient()` / `BochaClient()`），构造时读取 settings，改完下次调用自动生效，无需重置。
+
+服务重启后由 `app/main.py` 的 lifespan 在**配置自检之前**重新 `apply_overrides()`，保证重启不丢配置。
+
+### 密钥安全
+
+- **只读不改**：`GET /api/v1/settings/providers` 只返回打码值（如 `sk-1****abcd`，保留首尾各 4 位便于辨认），明文永不离开服务端；
+- **白名单**：只能改 15 个允许字段。`DATABASE_URL`、`SECRET_KEY` 等**不在白名单内**，即使直接调接口也会被 422 拒绝；
+- **输入框留空 = 保持原值**，因此不必回填已保存的 Key；清空需显式点「清除已保存的 Key」（有二次确认，语义是写入 `null` 以覆盖 `.env`）；
+- **审计日志**：每次变更记录「哪个用户改了哪些字段」，**只记字段名，不记值**。
+
+### ⚠️ 已知限制：任何登录用户都能改
+
+按当前需求，本功能**未做角色限制**——任何已登录用户都能修改这三组 API 配置。这意味着恶意用户可以：
+
+1. 把 LLM 的 Base URL 指向自己的服务器，之后所有用户的对话都会流经它；
+2. 替换高德 / 博查 Key，观察他人的查询内容；
+3. 填入无效值，让整个应用对所有人生效地不可用。
+
+这在**本机自用**场景下可接受。若要对外部署，建议二选一加固（改动都很小）：
+
+- 给 `User` 加 `is_admin` 字段，仅管理员可访问本接口（在 `app/api/settings.py` 的依赖里加一道校验）；
+- 或在 `app/api/settings.py` 中限制仅 `127.0.0.1` 可调用。
 
 ## 与需求文档的差异说明
 

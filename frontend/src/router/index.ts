@@ -38,6 +38,12 @@ const routes: RouteRecordRaw[] = [
     component: () => import('../views/Profile.vue'),
     meta: { title: '我的', requiresAuth: true },
   },
+  {
+    path: '/settings',
+    name: 'settings',
+    component: () => import('../views/Settings.vue'),
+    meta: { title: '配置', requiresAuth: true },
+  },
 ]
 
 const router = createRouter({

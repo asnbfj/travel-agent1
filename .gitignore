@@ -19,6 +19,9 @@ backend/travelai.db
 .env
 .env.local
 
+# 运行时配置（网页端保存的 API Key，含明文密钥，绝不能提交）
+backend/runtime_config.json
+
 # Node
 node_modules/
 dist/

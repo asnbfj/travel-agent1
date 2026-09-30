@@ -20,6 +20,13 @@ settings = get_settings()
 async def lifespan(app: FastAPI):
     """应用生命周期"""
     logger.info(f"🚀 启动 {settings.APP_NAME} v{settings.APP_VERSION}")
+
+    # 应用网页端保存的配置覆盖（runtime_config.json > .env）。
+    # 必须排在下面的配置自检之前：否则自检读到的仍是 .env 的旧值，
+    # 会在日志里报出「缺 Key」这类与实际生效配置不符的误导信息。
+    from app.runtime_config import apply_overrides
+    apply_overrides()
+
     # 导入模型以注册元数据
     import app.models  # noqa: F401
     await init_db()
